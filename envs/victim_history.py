@@ -2,7 +2,11 @@
 
 import gymnasium as gym
 import numpy as np
-from ray.rllib.examples.envs.classes.stateless_cartpole import StatelessCartPole
+
+try:
+    from ray.rllib.examples.envs.classes.stateless_cartpole import StatelessCartPole
+except ImportError:
+    from ray.rllib.examples.env.stateless_cartpole import StatelessCartPole
 
 
 HISTORY_LEN = 50
