@@ -29,7 +29,6 @@ class AdversarialCartPoleEnv(gym.Env):
         self.wind_sigma = float(config.get("wind_sigma", 1.0))
         self.horizon = int(config.get("horizon", 500))
         self.failure_bonus = float(config.get("failure_bonus", 1000.0))
-        self.miss_penalty = float(config.get("miss_penalty", 10.0))
 
         #standard CartPole physics parameters
         self.gravity = 9.8
@@ -202,7 +201,7 @@ class AdversarialCartPoleEnv(gym.Env):
         if victim_failed:
             reward += self.failure_bonus
         elif truncated:
-            reward -= self.miss_penalty * self._distance_to_failure()
+            reward -= self._distance_to_failure()
 
         # Compute metrics for abs wind and wind penalty
         self.abs_wind_sum += abs(wind)

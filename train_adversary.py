@@ -86,7 +86,6 @@ def env_config(args):
         "wind_sigma": args.wind_sigma,
         "horizon": args.horizon,
         "failure_bonus": args.failure_bonus,
-        "miss_penalty": args.miss_penalty,
     }
 
 # Transformer architecture settings
@@ -225,7 +224,6 @@ def parse_args():
     parser.add_argument("--wind-sigma", type=float, default=1.0)
     parser.add_argument("--horizon", type=int, default=500)
     parser.add_argument("--failure-bonus", type=float, default=1000.0)
-    parser.add_argument("--miss-penalty", type=float, default=10.0)
     return parser.parse_args()
 
 
