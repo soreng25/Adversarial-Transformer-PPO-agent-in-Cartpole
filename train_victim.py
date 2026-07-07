@@ -4,6 +4,7 @@ import argparse
 import os
 import time
 
+import gymnasium as gym
 import ray
 import torch
 from ray import tune
@@ -14,9 +15,26 @@ from envs.victim_history import make_stacked_stateless_cartpole
 
 
 #Assign name and register the environment
-VICTIM_ENV_ID = "victim_stateless_cartpole"
+NORMAL_VICTIM_ENV_ID = "victim_cartpole"
+STATELESS_VICTIM_ENV_ID = "victim_stateless_cartpole"
+
+
+def make_cartpole(env_config=None):
+    base = gym.make("CartPole-v1")
+    base_step = base.step
+
+    def step(action):
+        obs, reward, terminated, truncated, info = base_step(action)
+        info["victim_failed"] = bool(terminated)
+        return obs, reward, terminated, truncated, info
+
+    base.step = step
+    return base
+
+
 def register_env():
-    tune.register_env(VICTIM_ENV_ID, make_stacked_stateless_cartpole)
+    tune.register_env(NORMAL_VICTIM_ENV_ID, make_cartpole)
+    tune.register_env(STATELESS_VICTIM_ENV_ID, make_stacked_stateless_cartpole)
 
 
 class VictimMetricsCallback(DefaultCallbacks):
@@ -74,12 +92,24 @@ def configure_rollout_workers(config, args):
     )
 
 
+def victim_env_id(args):
+    if args.env == "cartpole":
+        return NORMAL_VICTIM_ENV_ID
+    return STATELESS_VICTIM_ENV_ID
+
+
+def make_eval_env(args):
+    if args.env == "cartpole":
+        return make_cartpole()
+    return make_stacked_stateless_cartpole()
+
+
 def build_config(args):
     num_gpus = 1 if torch.cuda.is_available() else 0
     config = (
         configure_api_stack(PPOConfig()) #starts a PPO object
         .resources(num_gpus=num_gpus)
-        .environment(VICTIM_ENV_ID)
+        .environment(victim_env_id(args))
         .framework("torch")
         .debugging(seed=args.seed) #sets random seed
         .callbacks(VictimMetricsCallback)
@@ -126,7 +156,7 @@ def evaluate(algo, args):
     if args.eval_episodes <= 0:
         return
 
-    env = make_stacked_stateless_cartpole()
+    env = make_eval_env(args)
     episode_returns = []
     failures = 0
 
@@ -162,9 +192,10 @@ def evaluate(algo, args):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--iters", type=int, default=100)
+    parser.add_argument("--env", choices=["cartpole", "stateless"], default="cartpole")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--train-batch-size", type=int, default=16000)
+    parser.add_argument("--train-batch-size", type=int, default=4000)
     parser.add_argument("--num-env-runners", type=int, default=4)
     parser.add_argument("--num-envs-per-env-runner", type=int, default=1)
     parser.add_argument(
@@ -185,6 +216,7 @@ def main():
     print(cuda_status())
     print(
         "victim config: "
+        f"env={args.env}  "
         f"iters={args.iters}  "
         f"train_batch_size={args.train_batch_size}  "
         f"num_env_runners={args.num_env_runners}  "
