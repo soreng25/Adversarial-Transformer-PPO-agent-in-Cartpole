@@ -5,6 +5,7 @@ import os
 
 import ray
 from ray import tune
+from ray.rllib.algorithms.callbacks import DefaultCallbacks
 from ray.rllib.algorithms.ppo import PPOConfig
 
 from envs.victim_history import make_stacked_stateless_cartpole
@@ -14,6 +15,22 @@ from envs.victim_history import make_stacked_stateless_cartpole
 VICTIM_ENV_ID = "victim_stateless_cartpole"
 def register_env():
     tune.register_env(VICTIM_ENV_ID, make_stacked_stateless_cartpole)
+
+
+class VictimMetricsCallback(DefaultCallbacks):
+    def on_episode_start(self, *, episode, **kwargs):
+        episode.user_data["victim_failed"] = 0.0
+
+    def on_episode_step(self, *, episode, **kwargs):
+        info = episode.last_info_for()
+        if info and info.get("victim_failed"):
+            episode.user_data["victim_failed"] = 1.0
+
+    def on_episode_end(self, *, episode, **kwargs):
+        episode.custom_metrics["victim_failure_rate"] = episode.user_data[
+            "victim_failed"
+        ]
+
 
 # Handles checkpoints
 def checkpoint_path(checkpoint):
@@ -33,6 +50,7 @@ def build_config(args):
         .framework("torch")
         .debugging(seed=args.seed) #sets random seed
         .env_runners(num_env_runners=args.num_env_runners) #sets number of parallel environment runners
+        .callbacks(VictimMetricsCallback)
         .training(
             gamma=0.99, #considers future rewards almost as important as short-term ones
             lr=args.lr, #learning rate step size
@@ -40,7 +58,7 @@ def build_config(args):
             model={
                 #model params
                 "use_attention": False,
-                "fcnet_hiddens": [64, 64], 
+                "fcnet_hiddens": [64, 64, 64], 
                 "fcnet_activation": "relu",
             },
         )
@@ -52,6 +70,23 @@ def mean_episode_return(result):
         "episode_return_mean",
         result.get("episode_reward_mean"),
     )
+
+
+def result_value(result, key):
+    env_runners = result.get("env_runners", {})
+    custom = result.get("custom_metrics", {})
+    env_custom = env_runners.get("custom_metrics", {})
+
+    candidates = [
+        (custom, key),
+        (custom, f"{key}_mean"),
+        (env_custom, key),
+        (env_custom, f"{key}_mean"),
+    ]
+    for source, name in candidates:
+        if name in source:
+            return source[name]
+    return None
 
 #defines CLI arguments
 def parse_args():
@@ -76,7 +111,11 @@ def main():
         for i in range(args.iters):
             result = algo.train()
             reward = mean_episode_return(result)
-            print(f"victim iter {i + 1}: mean_episode_return={reward}")
+            print(
+                f"victim iter {i + 1}: "
+                f"mean_episode_return={reward}  "
+                f"failure_rate={result_value(result, 'victim_failure_rate')}"
+            )
 
         os.makedirs(args.out_dir, exist_ok=True) #creates folder to save the trained victimPPO policy
         checkpoint = algo.save(args.out_dir) # saves the checkpoint policy

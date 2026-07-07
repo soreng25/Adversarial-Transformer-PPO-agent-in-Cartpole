@@ -40,6 +40,7 @@ def make_stacked_stateless_cartpole(env_config=None):
         obs, reward, terminated, truncated, info = base.step(action)
         history.append(np.asarray(obs, dtype=np.float32))
         history[:] = history[-HISTORY_LEN:]
+        info["victim_failed"] = bool(terminated)
         return stacked_observation(history), reward, terminated, truncated, info
 
     env = gym.Env()
