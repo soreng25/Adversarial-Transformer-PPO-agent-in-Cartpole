@@ -12,7 +12,12 @@ import numpy as np
 from gymnasium import spaces
 from ray import tune
 from ray.rllib.algorithms.algorithm import Algorithm
-from ray.rllib.examples.envs.classes.stateless_cartpole import StatelessCartPole
+
+from envs.victim_history import (
+    HISTORY_LEN,
+    make_stacked_stateless_cartpole,
+    stacked_observation,
+)
 
 
 class AdversarialCartPoleEnv(gym.Env):
@@ -74,13 +79,14 @@ class AdversarialCartPoleEnv(gym.Env):
         self.abs_wind_sum = 0.0
         self.wind_penalty_sum = 0.0
         self.victim_algo = None
+        self.victim_obs_history = []
 
     # Loads trained victim PPO
     def _ensure_victim_loaded(self):
         if self.victim_algo is None and self.victim_checkpoint:
             tune.register_env(
                 "victim_stateless_cartpole",
-                lambda env_config: StatelessCartPole(),
+                make_stacked_stateless_cartpole,
             )
             checkpoint = os.path.abspath(self.victim_checkpoint)
             self.victim_algo = Algorithm.from_checkpoint(checkpoint)
@@ -105,6 +111,9 @@ class AdversarialCartPoleEnv(gym.Env):
         x, _, theta, _ = self.state
         return np.array([x, theta], dtype=np.float32)
 
+    def _get_stacked_victim_obs(self):
+        return stacked_observation(self.victim_obs_history, HISTORY_LEN)
+
     # Get victim action
     def _victim_action(self):
         self._ensure_victim_loaded()
@@ -112,7 +121,7 @@ class AdversarialCartPoleEnv(gym.Env):
             return int(self.np_random.integers(0, 2))
 
         action = self.victim_algo.compute_single_action(
-            self._get_victim_obs(),
+            self._get_stacked_victim_obs(),
             explore=False,
         )
         return int(np.asarray(action).item())
@@ -138,6 +147,7 @@ class AdversarialCartPoleEnv(gym.Env):
         self.previous_wind = 0.0
         self.abs_wind_sum = 0.0
         self.wind_penalty_sum = 0.0
+        self.victim_obs_history = [self._get_victim_obs()]
         return self._get_obs(), {}
 
     # Step function. 
@@ -181,6 +191,8 @@ class AdversarialCartPoleEnv(gym.Env):
         self.steps += 1
         self.last_victim_action_sign = victim_action_sign
         self.previous_wind = wind
+        self.victim_obs_history.append(self._get_victim_obs())
+        self.victim_obs_history = self.victim_obs_history[-HISTORY_LEN:]
 
         # Victim fails if x-pos goes outside the +/- 2.4 threshold, or the pole exceeds 12 degrees in either direction
         victim_failed = bool(

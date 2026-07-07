@@ -6,13 +6,14 @@ import os
 import ray
 from ray import tune
 from ray.rllib.algorithms.ppo import PPOConfig
-from ray.rllib.examples.envs.classes.stateless_cartpole import StatelessCartPole
+
+from envs.victim_history import make_stacked_stateless_cartpole
 
 
 #Assign name and register the environment
 VICTIM_ENV_ID = "victim_stateless_cartpole"
 def register_env():
-    tune.register_env(VICTIM_ENV_ID, lambda env_config: StatelessCartPole())
+    tune.register_env(VICTIM_ENV_ID, make_stacked_stateless_cartpole)
 
 # Handles checkpoints
 def checkpoint_path(checkpoint):
