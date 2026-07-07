@@ -15,6 +15,7 @@ import time
 import statistics
 import numpy as np
 import gymnasium as gym
+import torch
 from ray import tune
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.examples.envs.classes.stateless_cartpole import StatelessCartPole
@@ -150,6 +151,7 @@ def build_config(use_transformer, env_name, seed):
             enable_rl_module_and_learner=False,
             enable_env_runner_and_connector_v2=False,
         )
+        .resources(num_gpus=1 if torch.cuda.is_available() else 0)
 
         #picks the RL environment we want to use (chosen above). 
         #cartpolev1 is standard gymnasium environment where goal of agent is to prevent the pole from falling over by moving the cart left/right to balance the pole puright
@@ -191,7 +193,7 @@ def main(use_transformer, env_name):
     seeds = [42, 43, 44, 45, 46]   # always run multiple seeds; edit this list to add/remove
     num_iters = 40
 
-    ray.init() #intialize ray. in this case im not doing parallel computing but thats what its used for
+    ray.init(num_gpus=1 if torch.cuda.is_available() else 0) #intialize ray. in this case im not doing parallel computing but thats what its used for
     try: #try to train the model
         start_time = time.perf_counter()
 

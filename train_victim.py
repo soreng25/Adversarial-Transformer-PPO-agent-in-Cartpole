@@ -4,6 +4,7 @@ import argparse
 import os
 
 import ray
+import torch
 from ray import tune
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
 from ray.rllib.algorithms.ppo import PPOConfig
@@ -40,12 +41,14 @@ def checkpoint_path(checkpoint):
 
 
 def build_config(args):
+    num_gpus = 1 if torch.cuda.is_available() else 0
     return (
         PPOConfig() #starts a PPO object
         .api_stack(
             enable_rl_module_and_learner=False,
             enable_env_runner_and_connector_v2=False,
         )
+        .resources(num_gpus=num_gpus)
         .environment(VICTIM_ENV_ID)
         .framework("torch")
         .debugging(seed=args.seed) #sets random seed
@@ -103,7 +106,7 @@ def parse_args():
 def main():
     args = parse_args() #reads CLI arguments
     register_env() #gives RLlib the environment
-    ray.init(ignore_reinit_error=True) #starts Ray to run RLlib
+    ray.init(ignore_reinit_error=True, num_gpus=1 if torch.cuda.is_available() else 0) #starts Ray to run RLlib
     algo = None
     try:
         algo = build_config(args).build() #build the PPO algorithm, assign it to algo

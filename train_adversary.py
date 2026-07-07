@@ -6,6 +6,7 @@ import os
 
 import numpy as np
 import ray
+import torch
 from ray import tune
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
 from ray.rllib.algorithms.ppo import PPOConfig
@@ -90,12 +91,14 @@ def env_config(args):
 
 # Transformer architecture settings
 def build_config(args):
+    num_gpus = 1 if torch.cuda.is_available() else 0
     return (
         PPOConfig()
         .api_stack(
             enable_rl_module_and_learner=False,
             enable_env_runner_and_connector_v2=False,
         )
+        .resources(num_gpus=num_gpus)
         .environment(ADVERSARY_ENV_ID, env_config=env_config(args))
         .framework("torch")
         .debugging(seed=args.seed)
@@ -231,7 +234,7 @@ def parse_args():
 def main():
     args = parse_args()
     register_env()
-    ray.init(ignore_reinit_error=True)
+    ray.init(ignore_reinit_error=True, num_gpus=1 if torch.cuda.is_available() else 0)
     algo = None
     best_failure_timestep = None
     try:
