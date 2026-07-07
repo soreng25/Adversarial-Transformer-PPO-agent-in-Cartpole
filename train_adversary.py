@@ -14,21 +14,30 @@ from envs.adversarial_cartpole import AdversarialCartPoleEnv
 
 
 ADVERSARY_ENV_ID = "adversarial_cartpole"
-HISTORY_LEN = 50
+HISTORY_LEN = 50  #how many history steps of memory the transformer keeps
 
-
+# We want to collect metrics over each episode during the adversary's training
+#RLlib owns the loop of start episode, step, end, update weights, repeat. Callbacks are designed so when episode starts, RLlib wil run this code which we used to collect metrics
+# RLlib expects callbacks to be managed by a class that inherits DefaultCallBacks
 class AdversaryMetricsCallback(DefaultCallbacks):
+
+
+    #We care about: EPISODE START, EPISODE STEP, EPISODE END. RLlib automatically calls these events
+
+    #Create empty lists for the metrics we want to collect
     def on_episode_start(self, *, episode, **kwargs):
         episode.user_data["abs_winds"] = []
         episode.user_data["wind_penalties"] = []
         episode.user_data["victim_failed"] = 0.0
         episode.user_data["failure_timestep"] = math.inf
 
+    # During each envstep, environment returns an INFO dictionary that includes our metrics
     def on_episode_step(self, *, episode, **kwargs):
         info = episode.last_info_for()
         if not info:
             return
 
+        #Append each metric we want to our lists
         episode.user_data["abs_winds"].append(info["abs_wind"])
         episode.user_data["wind_penalties"].append(
             info["wind_log_likelihood_penalty"]
@@ -37,12 +46,15 @@ class AdversaryMetricsCallback(DefaultCallbacks):
             episode.user_data["victim_failed"] = 1.0
             episode.user_data["failure_timestep"] = info["episode_len"]
 
+    # On episode end, summarize each metric across the episode and give back to RLlib
     def on_episode_end(self, *, episode, **kwargs):
+        #save them
         abs_winds = episode.user_data["abs_winds"]
         wind_penalties = episode.user_data["wind_penalties"]
         victim_failed = episode.user_data["victim_failed"]
         failure_timestep = episode.user_data["failure_timestep"]
-
+        
+        #RBlib collects the metrics again
         episode.custom_metrics["victim_failure_rate"] = victim_failed
         episode.custom_metrics["mean_abs_wind"] = (
             float(np.mean(abs_winds)) if abs_winds else 0.0
@@ -54,20 +66,19 @@ class AdversaryMetricsCallback(DefaultCallbacks):
             failure_timestep if victim_failed else 10**9
         )
 
-
+# Register env and handle checkpoint paths
 def register_env():
     tune.register_env(
         ADVERSARY_ENV_ID,
         lambda env_config: AdversarialCartPoleEnv(env_config),
     )
-
-
 def checkpoint_path(checkpoint):
     if hasattr(checkpoint, "checkpoint") and hasattr(checkpoint.checkpoint, "path"):
         return checkpoint.checkpoint.path
     return getattr(checkpoint, "path", str(checkpoint))
 
-
+# Helper to establish parameters for how the adversary interacts with the environment
+# E.g., needs to know the victim checkpoint, strongest wind it can use, failure bonus, etc
 def env_config(args):
     return {
         "victim_checkpoint": args.victim_checkpoint,
@@ -78,7 +89,7 @@ def env_config(args):
         "miss_penalty": args.miss_penalty,
     }
 
-
+# Transformer architecture settings
 def build_config(args):
     return (
         PPOConfig()
@@ -97,19 +108,19 @@ def build_config(args):
             train_batch_size=args.train_batch_size,
             model={
                 "use_attention": True,
-                "attention_num_transformer_units": 1,
-                "attention_dim": 64,
-                "attention_num_heads": 1,
-                "attention_head_dim": 32,
-                "attention_memory_inference": HISTORY_LEN,
-                "attention_memory_training": HISTORY_LEN,
-                "fcnet_hiddens": [64],
+                "attention_num_transformer_units": 1, #1 transformer block
+                "attention_dim": 64, #size of attention representation
+                "attention_num_heads": 1, #number of attention heads
+                "attention_head_dim": 32, #size of each attention head
+                "attention_memory_inference": HISTORY_LEN, #training memory
+                "attention_memory_training": HISTORY_LEN, #inference memory
+                "fcnet_hiddens": [64], #1 hidden layer, just for initial testing
                 "fcnet_activation": "relu",
             },
         )
     )
 
-
+#helper function to get final results after each iteration
 def result_value(result, key):
     env_runners = result.get("env_runners", {})
     custom = result.get("custom_metrics", {})
@@ -126,29 +137,30 @@ def result_value(result, key):
             return source[name]
     return None
 
-
+# helper function to get averaged adversary reward after each iteration
 def result_reward(result):
     return result.get("env_runners", {}).get(
         "episode_return_mean",
         result.get("episode_reward_mean"),
     )
 
-
+# Given the current observation, computes what action should be taken next
+#During training, RLlib automatically does this. But after we train it when we want to evaluate it, 
+#we have to manually compute the action ourselves. 
 def compute_action(algo, obs, state, explore):
-    if state:
-        state = [
-            np.expand_dims(s, axis=0) if np.asarray(s).ndim == 1 else s
-            for s in state
-        ]
-        out = algo.compute_single_action(obs, state=state, explore=explore)
-        action, state_out, _ = out
-        return action, state_out
-    return algo.compute_single_action(obs, explore=explore), state
+    #State is transformer memory
+    state = [
+        np.expand_dims(s, axis=0) if np.asarray(s).ndim == 1 else s
+        for s in state
+    ]
+    out = algo.compute_single_action(obs, state=state, explore=explore) #pick an action
+    action, state_out, _ = out #returns the action chosen and the updated state
+    return action, state_out
 
-
+# tests adversary after training
 def evaluate(algo, args):
-    env = AdversarialCartPoleEnv(env_config(args))
-    policy = algo.get_policy()
+    env = AdversarialCartPoleEnv(env_config(args)) #creates new environment for evaluation
+    policy = algo.get_policy() #get the trained adversarial policy
 
     failures = 0
     failure_steps = []
@@ -157,32 +169,39 @@ def evaluate(algo, args):
     total_steps = 0
 
     for episode_idx in range(args.eval_episodes):
-        obs, _ = env.reset(seed=args.seed + 1000 + episode_idx)
-        state = policy.get_initial_state()
+        #seed changes every episode so we don't evaluate adversary on the same episode every time
+        obs, _ = env.reset(seed=args.seed + 1000 + episode_idx) # starts new episode
+        state = policy.get_initial_state() #gets blank memory for start of episode
         done = False
         final_info = None
 
-        while not done:
-            action, state = compute_action(algo, obs, state, explore=False)
+        while not done: #keep running until the episode is done
+            #explore=false means don't add randomness, use training policy cleanly
+            action, state = compute_action(algo, obs, state, explore=False) #compute next action and state. 
+            #apply action to environment, and return observation, if victim failed, if horizoin was reached
             obs, _, terminated, truncated, info = env.step(action)
-            done = terminated or truncated
-            final_info = info
+            done = terminated or truncated #done if victim failed or horizon reached
+            final_info = info #save info
+
+            #update metrics
             total_steps += 1
             abs_wind_sum += info["abs_wind"]
             penalty_sum += info["wind_log_likelihood_penalty"]
-
+            
+        #increase failure count if victim failed
         if final_info and final_info["victim_failed"]:
             failures += 1
             failure_steps.append(final_info["episode_len"])
-
     env.close()
 
+    #compute average failure timestep, absolute wind, and wind penalty
     avg_failure_timestep = (
         sum(failure_steps) / len(failure_steps) if failure_steps else None
     )
     avg_abs_wind = abs_wind_sum / total_steps if total_steps else 0.0
     avg_wind_penalty = penalty_sum / total_steps if total_steps else 0.0
 
+    #print eval metrics
     print("final evaluation:")
     print(f"  episodes={args.eval_episodes}")
     print(f"  failure_count={failures}")
@@ -191,7 +210,7 @@ def evaluate(algo, args):
     print(f"  average_abs_wind={avg_abs_wind:.4f}")
     print(f"  average_wind_log_likelihood_penalty={avg_wind_penalty:.4f}")
 
-
+    #get CLI arguments
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--victim-checkpoint", required=True)
@@ -210,6 +229,7 @@ def parse_args():
     return parser.parse_args()
 
 
+# main loop for TRAINING
 def main():
     args = parse_args()
     register_env()

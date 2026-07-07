@@ -23,6 +23,7 @@ class AdversarialCartPoleEnv(gym.Env):
     def __init__(self, config=None):
         config = config or {}
 
+        #Get settings for how adversarial param policies
         self.victim_checkpoint = config.get("victim_checkpoint")
         self.max_wind = float(config.get("max_wind", 4.0))
         self.wind_sigma = float(config.get("wind_sigma", 1.0))
@@ -30,6 +31,7 @@ class AdversarialCartPoleEnv(gym.Env):
         self.failure_bonus = float(config.get("failure_bonus", 1000.0))
         self.miss_penalty = float(config.get("miss_penalty", 10.0))
 
+        #standard CartPole physics parameters
         self.gravity = 9.8
         self.masscart = 1.0
         self.masspole = 0.1
@@ -40,9 +42,10 @@ class AdversarialCartPoleEnv(gym.Env):
         self.tau = 0.02
         self.kinematics_integrator = "euler"
 
-        self.theta_threshold_radians = 12 * 2 * math.pi / 360
-        self.x_threshold = 2.4
+        self.theta_threshold_radians = 12 * 2 * math.pi / 360 #cart fails if pole angle exceeds 12 degrees
+        self.x_threshold = 2.4  #cart fails if it exceeds +/- 2.4
 
+        #Adversary observation space: [x, x_dot, theta, theta_dot, last_victim_action, previous_wind]
         high = np.array(
             [
                 self.x_threshold * 2,
@@ -55,12 +58,15 @@ class AdversarialCartPoleEnv(gym.Env):
             dtype=np.float32,
         )
         self.observation_space = spaces.Box(-high, high, dtype=np.float32)
+
+        #Adversary action space, [-max_wind, max_wind], [-4, 4]
         self.action_space = spaces.Box(
             low=np.array([-self.max_wind], dtype=np.float32),
             high=np.array([self.max_wind], dtype=np.float32),
             dtype=np.float32,
         )
 
+        #Tracks current episode
         self.np_random = None
         self.state = None
         self.steps = 0
@@ -70,6 +76,7 @@ class AdversarialCartPoleEnv(gym.Env):
         self.wind_penalty_sum = 0.0
         self.victim_algo = None
 
+    # Loads trained victim PPO
     def _ensure_victim_loaded(self):
         if self.victim_algo is None and self.victim_checkpoint:
             tune.register_env(
@@ -79,6 +86,7 @@ class AdversarialCartPoleEnv(gym.Env):
             checkpoint = os.path.abspath(self.victim_checkpoint)
             self.victim_algo = Algorithm.from_checkpoint(checkpoint)
 
+    # Returns 6-value observation for adversary
     def _get_obs(self):
         x, x_dot, theta, theta_dot = self.state
         return np.array(
@@ -93,10 +101,12 @@ class AdversarialCartPoleEnv(gym.Env):
             dtype=np.float32,
         )
 
+    # Get victim observation
     def _get_victim_obs(self):
         x, _, theta, _ = self.state
         return np.array([x, theta], dtype=np.float32)
 
+    # Get victim action
     def _victim_action(self):
         self._ensure_victim_loaded()
         if self.victim_algo is None:
@@ -108,6 +118,8 @@ class AdversarialCartPoleEnv(gym.Env):
         )
         return int(np.asarray(action).item())
 
+
+    # Compute distance to failure
     def _distance_to_failure(self):
         x, _, theta, _ = self.state
         x_margin = max(0.0, (self.x_threshold - abs(x)) / self.x_threshold)
@@ -117,7 +129,8 @@ class AdversarialCartPoleEnv(gym.Env):
             / self.theta_threshold_radians,
         )
         return min(x_margin, theta_margin)
-
+    
+    # Reset and start a new episode. Randomizes initial CartPole state near zero
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.state = self.np_random.uniform(low=-0.05, high=0.05, size=(4,))
@@ -128,14 +141,19 @@ class AdversarialCartPoleEnv(gym.Env):
         self.wind_penalty_sum = 0.0
         return self._get_obs(), {}
 
+    # Step function. 
     def step(self, action):
+
+        # Clips the wind into the allowed range
         wind = float(np.asarray(action, dtype=np.float32).reshape(-1)[0])
         wind = float(np.clip(wind, -self.max_wind, self.max_wind))
 
+        # Victim chooses action. If victim action is 1, pushes right. If 0, pushes left. Force=10
         victim_action = self._victim_action()
         victim_action_sign = 1.0 if victim_action == 1 else -1.0
-        force = (self.force_mag * victim_action_sign) + wind
+        force = (self.force_mag * victim_action_sign) + wind #add wind here, so wind adds to the force
 
+        # Computes environment physics
         x, x_dot, theta, theta_dot = self.state
         costheta = math.cos(theta)
         sintheta = math.sin(theta)
@@ -165,15 +183,20 @@ class AdversarialCartPoleEnv(gym.Env):
         self.last_victim_action_sign = victim_action_sign
         self.previous_wind = wind
 
+        # Victim fails if x-pos goes outside the +/- 2.4 threshold, or the pole exceeds 12 degrees in either direction
         victim_failed = bool(
             x < -self.x_threshold
             or x > self.x_threshold
             or theta < -self.theta_threshold_radians
             or theta > self.theta_threshold_radians
         )
+
+        #Truncated: max horizon reached w/o failure
+        #Terminated: victim failed, either cart off the track or pole fell
         truncated = self.steps >= self.horizon and not victim_failed
         terminated = victim_failed
 
+        # Compute reward here
         wind_log_likelihood_penalty = 0.5 * (wind / self.wind_sigma) ** 2
         reward = -wind_log_likelihood_penalty
         if victim_failed:
@@ -181,11 +204,13 @@ class AdversarialCartPoleEnv(gym.Env):
         elif truncated:
             reward -= self.miss_penalty * self._distance_to_failure()
 
+        # Compute metrics for abs wind and wind penalty
         self.abs_wind_sum += abs(wind)
         self.wind_penalty_sum += wind_log_likelihood_penalty
         mean_abs_wind = self.abs_wind_sum / self.steps
         mean_wind_penalty = self.wind_penalty_sum / self.steps
 
+        # Info dictionary
         info = {
             "victim_action": victim_action,
             "victim_action_sign": victim_action_sign,
