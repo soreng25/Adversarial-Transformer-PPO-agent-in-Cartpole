@@ -51,9 +51,22 @@ def cuda_status():
     return f"cuda_available=True  gpu={torch.cuda.get_device_name(0)}"
 
 
+def configure_rollout_workers(config, args):
+    if hasattr(config, "env_runners"):
+        return config.env_runners(
+            num_env_runners=args.num_env_runners,
+            num_envs_per_env_runner=args.num_envs_per_env_runner,
+        )
+
+    return config.rollouts(
+        num_rollout_workers=args.num_env_runners,
+        num_envs_per_worker=args.num_envs_per_env_runner,
+    )
+
+
 def build_config(args):
     num_gpus = 1 if torch.cuda.is_available() else 0
-    return (
+    config = (
         PPOConfig() #starts a PPO object
         .api_stack(
             enable_rl_module_and_learner=False,
@@ -63,10 +76,6 @@ def build_config(args):
         .environment(VICTIM_ENV_ID)
         .framework("torch")
         .debugging(seed=args.seed) #sets random seed
-        .env_runners(
-            num_env_runners=args.num_env_runners,
-            num_envs_per_env_runner=args.num_envs_per_env_runner,
-        ) #sets number of parallel environment runners
         .callbacks(VictimMetricsCallback)
         .training(
             gamma=0.99, #considers future rewards almost as important as short-term ones
@@ -80,6 +89,7 @@ def build_config(args):
             },
         )
     )
+    return configure_rollout_workers(config, args)
 
 #helper function to return result
 def mean_episode_return(result):
