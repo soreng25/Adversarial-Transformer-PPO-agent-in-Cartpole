@@ -40,6 +40,7 @@ def checkpoint_path(checkpoint):
     return getattr(checkpoint, "path", str(checkpoint))
 
 
+
 def build_config(args):
     num_gpus = 1 if torch.cuda.is_available() else 0
     return (
