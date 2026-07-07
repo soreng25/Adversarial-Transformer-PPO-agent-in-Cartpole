@@ -51,6 +51,16 @@ def cuda_status():
     return f"cuda_available=True  gpu={torch.cuda.get_device_name(0)}"
 
 
+def configure_api_stack(config):
+    if not hasattr(config, "api_stack"):
+        return config
+
+    return config.api_stack(
+        enable_rl_module_and_learner=False,
+        enable_env_runner_and_connector_v2=False,
+    )
+
+
 def configure_rollout_workers(config, args):
     if hasattr(config, "env_runners"):
         return config.env_runners(
@@ -67,11 +77,7 @@ def configure_rollout_workers(config, args):
 def build_config(args):
     num_gpus = 1 if torch.cuda.is_available() else 0
     config = (
-        PPOConfig() #starts a PPO object
-        .api_stack(
-            enable_rl_module_and_learner=False,
-            enable_env_runner_and_connector_v2=False,
-        )
+        configure_api_stack(PPOConfig()) #starts a PPO object
         .resources(num_gpus=num_gpus)
         .environment(VICTIM_ENV_ID)
         .framework("torch")
