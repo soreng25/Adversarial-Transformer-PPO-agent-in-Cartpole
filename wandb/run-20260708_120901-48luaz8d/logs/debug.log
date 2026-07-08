@@ -1,0 +1,9 @@
+2026-07-08 12:09:01,742 INFO    MainThread:30060 [wandb_setup.py:_flush():81] Current SDK version is 0.28.0
+2026-07-08 12:09:01,742 INFO    MainThread:30060 [wandb_setup.py:_flush():81] Configure stats pid to 30060
+2026-07-08 12:09:01,742 INFO    MainThread:30060 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2026-07-08 12:09:01,742 INFO    MainThread:30060 [wandb_init.py:setup_run_log_directory():725] Logging user logs to C:\Users\sghorai\Desktop\Adversarial-Transformer-PPO-agent-in-Cartpole\wandb\run-20260708_120901-48luaz8d\logs\debug.log
+2026-07-08 12:09:01,742 INFO    MainThread:30060 [wandb_init.py:setup_run_log_directory():726] Logging internal logs to C:\Users\sghorai\Desktop\Adversarial-Transformer-PPO-agent-in-Cartpole\wandb\run-20260708_120901-48luaz8d\logs\debug-internal.log
+2026-07-08 12:09:01,742 INFO    MainThread:30060 [wandb_init.py:init():768] calling init triggers
+2026-07-08 12:09:01,742 INFO    MainThread:30060 [wandb_init.py:init():773] wandb.init called with sweep_config: {}
+config: {'env': 'cartpole', 'iters': 1, 'seed': 42, 'lr': 0.0003, 'train_batch_size': 4000, 'num_env_runners': 4, 'num_envs_per_env_runner': 1, 'hidden_sizes': [256, 256, 128], 'eval_episodes': 1, 'eval_seed': 1000, 'eval_only': False, 'checkpoint': None, 'out_dir': 'checkpoints/victim', '_wandb': {}}
+2026-07-08 12:09:01,742 INFO    MainThread:30060 [wandb_init.py:init():816] starting backend

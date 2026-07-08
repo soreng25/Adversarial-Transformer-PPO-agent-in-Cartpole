@@ -14,6 +14,11 @@ from ray.rllib.algorithms.ppo import PPOConfig
 
 from envs.victim_history import make_stacked_stateless_cartpole
 
+try:
+    import wandb
+except ImportError:
+    wandb = None
+
 
 #Assign name and register the environment
 NORMAL_VICTIM_ENV_ID = "victim_cartpole"
@@ -155,7 +160,7 @@ def result_value(result, key):
 
 def evaluate(algo, args):
     if args.eval_episodes <= 0:
-        return
+        return None
 
     env = make_eval_env(args)
     episode_returns = []
@@ -187,10 +192,48 @@ def evaluate(algo, args):
     print(f"  episodes={len(episode_returns)}")
     print(f"  mean_episode_return={mean_return:.2f}")
     print(f"  failure_rate={failure_rate:.3f}")
+    return {
+        "episodes": len(episode_returns),
+        "mean_episode_return": mean_return,
+        "failure_rate": failure_rate,
+    }
 
 
 def load_checkpoint(checkpoint):
     return Algorithm.from_checkpoint(os.path.abspath(checkpoint))
+
+
+def maybe_init_wandb(args):
+    if not args.wandb:
+        return None
+    if wandb is None:
+        raise ImportError(
+            "wandb is not installed. Install it with `pip install wandb` "
+            "or remove the --wandb flag."
+        )
+
+    config = {
+        "env": args.env,
+        "iters": args.iters,
+        "seed": args.seed,
+        "lr": args.lr,
+        "train_batch_size": args.train_batch_size,
+        "num_env_runners": args.num_env_runners,
+        "num_envs_per_env_runner": args.num_envs_per_env_runner,
+        "hidden_sizes": args.hidden_sizes,
+        "eval_episodes": args.eval_episodes,
+        "eval_seed": args.eval_seed,
+        "eval_only": args.eval_only,
+        "checkpoint": args.checkpoint,
+        "out_dir": args.out_dir,
+    }
+    return wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=args.wandb_run_name,
+        mode=args.wandb_mode,
+        config=config,
+    )
 
 
 #defines CLI arguments
@@ -213,6 +256,11 @@ def parse_args():
     parser.add_argument("--eval-only", action="store_true")
     parser.add_argument("--checkpoint")
     parser.add_argument("--out-dir", default="checkpoints/victim")
+    parser.add_argument("--wandb", action="store_true")
+    parser.add_argument("--wandb-project", default="cartpole-victim")
+    parser.add_argument("--wandb-entity")
+    parser.add_argument("--wandb-run-name")
+    parser.add_argument("--wandb-mode", choices=["online", "offline", "disabled"], default="online")
     return parser.parse_args()
 
 
@@ -220,6 +268,7 @@ def main():
     args = parse_args() #reads CLI arguments
     register_env() #gives RLlib the environment
     num_gpus = 1 if torch.cuda.is_available() else 0
+    wandb_run = maybe_init_wandb(args)
     print(cuda_status())
     print(
         "victim config: "
@@ -229,7 +278,8 @@ def main():
         f"num_env_runners={args.num_env_runners}  "
         f"num_envs_per_env_runner={args.num_envs_per_env_runner}  "
         f"hidden_sizes={args.hidden_sizes}  "
-        f"eval_only={args.eval_only}"
+        f"eval_only={args.eval_only}  "
+        f"wandb={args.wandb}"
     )
     ray.init(ignore_reinit_error=True, num_gpus=num_gpus) #starts Ray to run RLlib
     algo = None
@@ -246,7 +296,11 @@ def main():
             )
             algo = load_checkpoint(args.checkpoint)
             try:
-                evaluate(algo, args)
+                eval_metrics = evaluate(algo, args)
+                if wandb_run is not None and eval_metrics is not None:
+                    wandb_run.log(
+                        {f"eval/{key}": value for key, value in eval_metrics.items()}
+                    )
             except RuntimeError as exc:
                 raise RuntimeError(
                     "evaluation failed; if this is a tensor shape error, "
@@ -267,15 +321,34 @@ def main():
                 f"failure_rate={result_value(result, 'victim_failure_rate')}  "
                 f"iter_seconds={iter_seconds:.2f}"
             )
+            if wandb_run is not None:
+                wandb_run.log(
+                    {
+                        "train/iteration": i + 1,
+                        "train/mean_episode_return": reward,
+                        "train/failure_rate": result_value(
+                            result, "victim_failure_rate"
+                        ),
+                        "train/iter_seconds": iter_seconds,
+                    }
+                )
 
         os.makedirs(args.out_dir, exist_ok=True) #creates folder to save the trained victimPPO policy
         checkpoint = algo.save(args.out_dir) # saves the checkpoint policy
         print(f"victim checkpoint: {checkpoint_path(checkpoint)}") #prints the path we pass into the adversarial transformer training script
-        evaluate(algo, args)
+        if wandb_run is not None:
+            wandb_run.summary["checkpoint_path"] = checkpoint_path(checkpoint)
+        eval_metrics = evaluate(algo, args)
+        if wandb_run is not None and eval_metrics is not None:
+            wandb_run.log(
+                {f"eval/{key}": value for key, value in eval_metrics.items()}
+            )
     finally:
         if algo is not None:
             algo.stop()
         ray.shutdown()
+        if wandb_run is not None:
+            wandb_run.finish()
 
 
 if __name__ == "__main__":
