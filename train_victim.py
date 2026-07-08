@@ -9,6 +9,7 @@ import ray
 import torch
 from ray import tune
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
+from ray.rllib.algorithms.algorithm import Algorithm
 from ray.rllib.algorithms.ppo import PPOConfig
 
 from envs.victim_history import make_stacked_stateless_cartpole
@@ -188,6 +189,10 @@ def evaluate(algo, args):
     print(f"  failure_rate={failure_rate:.3f}")
 
 
+def load_checkpoint(checkpoint):
+    return Algorithm.from_checkpoint(os.path.abspath(checkpoint))
+
+
 #defines CLI arguments
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -205,6 +210,8 @@ def parse_args():
     )
     parser.add_argument("--eval-episodes", type=int, default=20)
     parser.add_argument("--eval-seed", type=int, default=1000)
+    parser.add_argument("--eval-only", action="store_true")
+    parser.add_argument("--checkpoint")
     parser.add_argument("--out-dir", default="checkpoints/victim")
     return parser.parse_args()
 
@@ -221,11 +228,32 @@ def main():
         f"train_batch_size={args.train_batch_size}  "
         f"num_env_runners={args.num_env_runners}  "
         f"num_envs_per_env_runner={args.num_envs_per_env_runner}  "
-        f"hidden_sizes={args.hidden_sizes}"
+        f"hidden_sizes={args.hidden_sizes}  "
+        f"eval_only={args.eval_only}"
     )
     ray.init(ignore_reinit_error=True, num_gpus=num_gpus) #starts Ray to run RLlib
     algo = None
     try:
+        if args.eval_only:
+            if not args.checkpoint:
+                raise ValueError("--eval-only requires --checkpoint")
+            print(
+                "loading victim checkpoint for deterministic evaluation: "
+                f"{args.checkpoint}"
+            )
+            print(
+                "make sure --env matches the environment used to train the checkpoint"
+            )
+            algo = load_checkpoint(args.checkpoint)
+            try:
+                evaluate(algo, args)
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    "evaluation failed; if this is a tensor shape error, "
+                    "--env probably does not match the checkpoint's training env"
+                ) from exc
+            return
+
         algo = build_config(args).build() #build the PPO algorithm, assign it to algo
         #loops over iterations. ONLY RUNS ON 1 SEED
         for i in range(args.iters):
