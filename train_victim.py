@@ -5,6 +5,7 @@ import os
 import time
 
 import gymnasium as gym
+import numpy as np
 import ray
 import torch
 from ray import tune
@@ -69,6 +70,10 @@ def parse_hidden_sizes(value):
     return [int(size.strip()) for size in value.split(",") if size.strip()]
 
 
+def parse_int_list(value):
+    return [int(item.strip()) for item in value.split(",") if item.strip()]
+
+
 def cuda_status():
     if not torch.cuda.is_available():
         return "cuda_available=False"
@@ -108,6 +113,12 @@ def make_eval_env(args):
     if args.env == "cartpole":
         return make_cartpole()
     return make_stacked_stateless_cartpole()
+
+
+def make_render_env(args):
+    if args.env != "cartpole":
+        return None
+    return gym.make("CartPole-v1", render_mode="rgb_array")
 
 
 def build_config(args):
@@ -199,6 +210,96 @@ def evaluate(algo, args):
     }
 
 
+def render_policy_episode(algo, args, seed):
+    env = make_render_env(args)
+    if env is None:
+        print("wandb video logging is only available for --env cartpole")
+        return None
+
+    frames = []
+    episode_return = 0.0
+    final_info = {}
+
+    try:
+        obs, _ = env.reset(seed=seed)
+        try:
+            frame = env.render()
+        except gym.error.DependencyNotInstalled:
+            print(
+                "CartPole video rendering needs pygame; install it with "
+                "`pip install \"gymnasium[classic-control]\"`"
+            )
+            return None
+        if frame is not None:
+            frames.append(frame)
+
+        for step in range(args.wandb_video_max_steps):
+            action = algo.compute_single_action(
+                obs,
+                explore=args.wandb_video_explore,
+            )
+            obs, reward, terminated, truncated, info = env.step(action)
+            episode_return += reward
+            final_info = info
+
+            try:
+                frame = env.render()
+            except gym.error.DependencyNotInstalled:
+                print(
+                    "CartPole video rendering needs pygame; install it with "
+                    "`pip install \"gymnasium[classic-control]\"`"
+                )
+                return None
+            if frame is not None:
+                frames.append(frame)
+
+            if terminated or truncated:
+                break
+    finally:
+        env.close()
+
+    if not frames:
+        return None
+
+    video = np.stack(frames).transpose(0, 3, 1, 2)
+    return {
+        "video": video,
+        "episode_return": episode_return,
+        "episode_len": len(frames) - 1,
+        "victim_failed": float(final_info.get("victim_failed", False)),
+    }
+
+
+def maybe_log_wandb_video(wandb_run, algo, args, iteration):
+    if wandb_run is None or not args.wandb_video:
+        return
+    if iteration not in args.wandb_video_iters:
+        return
+
+    rendered = render_policy_episode(
+        algo,
+        args,
+        seed=args.eval_seed + iteration,
+    )
+    if rendered is None:
+        return
+
+    wandb_run.log(
+        {
+            "video/policy_rollout": wandb.Video(
+                rendered["video"],
+                fps=args.wandb_video_fps,
+                format="mp4",
+            ),
+            "video/iteration": iteration,
+            "video/episode_return": rendered["episode_return"],
+            "video/episode_len": rendered["episode_len"],
+            "video/victim_failed": rendered["victim_failed"],
+        },
+        step=iteration,
+    )
+
+
 def load_checkpoint(checkpoint):
     return Algorithm.from_checkpoint(os.path.abspath(checkpoint))
 
@@ -226,6 +327,9 @@ def maybe_init_wandb(args):
         "eval_only": args.eval_only,
         "checkpoint": args.checkpoint,
         "out_dir": args.out_dir,
+        "wandb_video": args.wandb_video,
+        "wandb_video_iters": args.wandb_video_iters,
+        "wandb_video_explore": args.wandb_video_explore,
     }
     return wandb.init(
         project=args.wandb_project,
@@ -261,6 +365,15 @@ def parse_args():
     parser.add_argument("--wandb-entity")
     parser.add_argument("--wandb-run-name")
     parser.add_argument("--wandb-mode", choices=["online", "offline", "disabled"], default="online")
+    parser.add_argument("--wandb-video", action="store_true")
+    parser.add_argument(
+        "--wandb-video-iters",
+        type=parse_int_list,
+        default=parse_int_list("1,5,10,25,50,100"),
+    )
+    parser.add_argument("--wandb-video-fps", type=int, default=30)
+    parser.add_argument("--wandb-video-max-steps", type=int, default=500)
+    parser.add_argument("--wandb-video-explore", action="store_true")
     return parser.parse_args()
 
 
@@ -330,8 +443,10 @@ def main():
                             result, "victim_failure_rate"
                         ),
                         "train/iter_seconds": iter_seconds,
-                    }
+                    },
+                    step=i + 1,
                 )
+                maybe_log_wandb_video(wandb_run, algo, args, i + 1)
 
         os.makedirs(args.out_dir, exist_ok=True) #creates folder to save the trained victimPPO policy
         checkpoint = algo.save(args.out_dir) # saves the checkpoint policy
