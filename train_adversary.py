@@ -3,6 +3,7 @@
 import argparse
 import math
 import os
+import time
 
 import numpy as np
 import ray
@@ -12,6 +13,11 @@ from ray.rllib.algorithms.callbacks import DefaultCallbacks
 from ray.rllib.algorithms.ppo import PPOConfig
 
 from envs.adversarial_cartpole import AdversarialCartPoleEnv
+
+try:
+    import wandb
+except ImportError:
+    wandb = None
 
 
 ADVERSARY_ENV_ID = "adversarial_cartpole"
@@ -212,6 +218,47 @@ def evaluate(algo, args):
     print(f"  average_failure_timestep={avg_failure_timestep}")
     print(f"  average_abs_wind={avg_abs_wind:.4f}")
     print(f"  average_wind_log_likelihood_penalty={avg_wind_penalty:.4f}")
+    return {
+        "episodes": args.eval_episodes,
+        "failure_count": failures,
+        "failure_rate": failures / args.eval_episodes,
+        "average_failure_timestep": avg_failure_timestep,
+        "average_abs_wind": avg_abs_wind,
+        "average_wind_log_likelihood_penalty": avg_wind_penalty,
+    }
+
+
+def maybe_init_wandb(args):
+    if not args.wandb:
+        return None
+    if wandb is None:
+        raise ImportError(
+            "wandb is not installed. Install it with `pip install wandb` "
+            "or remove the --wandb flag."
+        )
+
+    config = {
+        "victim_checkpoint": args.victim_checkpoint,
+        "victim_env": args.victim_env,
+        "iters": args.iters,
+        "seed": args.seed,
+        "lr": args.lr,
+        "train_batch_size": args.train_batch_size,
+        "num_env_runners": args.num_env_runners,
+        "out_dir": args.out_dir,
+        "eval_episodes": args.eval_episodes,
+        "max_wind": args.max_wind,
+        "wind_sigma": args.wind_sigma,
+        "horizon": args.horizon,
+        "failure_bonus": args.failure_bonus,
+    }
+    return wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=args.wandb_run_name,
+        mode=args.wandb_mode,
+        config=config,
+    )
 
     #get CLI arguments
 def parse_args():
@@ -234,6 +281,15 @@ def parse_args():
     parser.add_argument("--wind-sigma", type=float, default=1.0)
     parser.add_argument("--horizon", type=int, default=500)
     parser.add_argument("--failure-bonus", type=float, default=1000.0)
+    parser.add_argument("--wandb", action="store_true")
+    parser.add_argument("--wandb-project", default="cartpole-adversary")
+    parser.add_argument("--wandb-entity")
+    parser.add_argument("--wandb-run-name")
+    parser.add_argument(
+        "--wandb-mode",
+        choices=["online", "offline", "disabled"],
+        default="online",
+    )
     return parser.parse_args()
 
 
@@ -241,13 +297,27 @@ def parse_args():
 def main():
     args = parse_args()
     register_env()
+    wandb_run = maybe_init_wandb(args)
     ray.init(ignore_reinit_error=True, num_gpus=1 if torch.cuda.is_available() else 0)
     algo = None
     best_failure_timestep = None
     try:
         algo = build_config(args).build()
         for i in range(args.iters):
+            start_time = time.perf_counter()
             result = algo.train()
+            iter_seconds = time.perf_counter() - start_time
+            reward = result_reward(result)
+            failure_rate = result_value(result, "victim_failure_rate")
+            episode_len_mean = result.get("env_runners", {}).get(
+                "episode_len_mean",
+                result.get("episode_len_mean"),
+            )
+            mean_abs_wind = result_value(result, "mean_abs_wind")
+            mean_wind_penalty = result_value(
+                result,
+                "mean_wind_log_likelihood_penalty",
+            )
             failure_timestep = result_value(result, "failure_timestep_min")
             if failure_timestep is not None and failure_timestep < 10**9:
                 best_failure_timestep = (
@@ -258,22 +328,45 @@ def main():
 
             print(
                 f"adversary iter {i + 1}: "
-                f"reward_mean={result_reward(result)}  "
-                f"failure_rate={result_value(result, 'victim_failure_rate')}  "
-                f"episode_len_mean={result.get('env_runners', {}).get('episode_len_mean', result.get('episode_len_mean'))}  "
-                f"mean_abs_wind={result_value(result, 'mean_abs_wind')}  "
-                f"mean_wind_log_likelihood_penalty={result_value(result, 'mean_wind_log_likelihood_penalty')}  "
+                f"reward_mean={reward}  "
+                f"failure_rate={failure_rate}  "
+                f"episode_len_mean={episode_len_mean}  "
+                f"mean_abs_wind={mean_abs_wind}  "
+                f"mean_wind_log_likelihood_penalty={mean_wind_penalty}  "
                 f"best_failure_timestep={best_failure_timestep}"
             )
+            if wandb_run is not None:
+                wandb_run.log(
+                    {
+                        "train/iteration": i + 1,
+                        "train/reward_mean": reward,
+                        "train/failure_rate": failure_rate,
+                        "train/episode_len_mean": episode_len_mean,
+                        "train/mean_abs_wind": mean_abs_wind,
+                        "train/mean_wind_log_likelihood_penalty": mean_wind_penalty,
+                        "train/failure_timestep_min": failure_timestep,
+                        "train/best_failure_timestep": best_failure_timestep,
+                        "train/iter_seconds": iter_seconds,
+                    },
+                    step=i + 1,
+                )
 
         os.makedirs(args.out_dir, exist_ok=True)
         checkpoint = algo.save(args.out_dir)
         print(f"adversary checkpoint: {checkpoint_path(checkpoint)}")
-        evaluate(algo, args)
+        if wandb_run is not None:
+            wandb_run.summary["checkpoint_path"] = checkpoint_path(checkpoint)
+        eval_metrics = evaluate(algo, args)
+        if wandb_run is not None:
+            wandb_run.log(
+                {f"eval/{key}": value for key, value in eval_metrics.items()}
+            )
     finally:
         if algo is not None:
             algo.stop()
         ray.shutdown()
+        if wandb_run is not None:
+            wandb_run.finish()
 
 
 if __name__ == "__main__":
