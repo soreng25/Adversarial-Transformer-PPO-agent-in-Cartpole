@@ -83,6 +83,7 @@ def checkpoint_path(checkpoint):
 def env_config(args):
     return {
         "victim_checkpoint": args.victim_checkpoint,
+        "victim_env": args.victim_env,
         "max_wind": args.max_wind,
         "wind_sigma": args.wind_sigma,
         "horizon": args.horizon,
@@ -216,6 +217,12 @@ def evaluate(algo, args):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--victim-checkpoint", required=True)
+    parser.add_argument(
+        "--victim-env",
+        choices=["cartpole", "stateless"],
+        default="cartpole",
+        help="Observation format used by the frozen victim checkpoint.",
+    )
     parser.add_argument("--iters", type=int, default=10)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--lr", type=float, default=3e-4)

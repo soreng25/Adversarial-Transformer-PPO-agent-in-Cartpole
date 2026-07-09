@@ -1,7 +1,7 @@
 """Adversarial dynamics-attack CartPole environment.
 
-The learner controls a small wind force. A frozen PPO victim observes only
-``[x, theta]`` and chooses the normal CartPole left/right action.
+The learner controls a small wind force. A frozen PPO victim chooses the normal
+CartPole left/right action.
 """
 
 import math
@@ -19,6 +19,22 @@ from envs.victim_history import (
     stacked_observation,
 )
 
+NORMAL_VICTIM_ENV_ID = "victim_cartpole"
+STATELESS_VICTIM_ENV_ID = "victim_stateless_cartpole"
+
+
+def make_cartpole(env_config=None):
+    base = gym.make("CartPole-v1")
+    base_step = base.step
+
+    def step(action):
+        obs, reward, terminated, truncated, info = base_step(action)
+        info["victim_failed"] = bool(terminated)
+        return obs, reward, terminated, truncated, info
+
+    base.step = step
+    return base
+
 
 class AdversarialCartPoleEnv(gym.Env):
     """CartPole where an adversary adds wind to a frozen victim's action."""
@@ -30,10 +46,17 @@ class AdversarialCartPoleEnv(gym.Env):
 
         #Get settings for how adversarial param policies
         self.victim_checkpoint = config.get("victim_checkpoint")
+        self.victim_env = config.get("victim_env", "cartpole")
         self.max_wind = float(config.get("max_wind", 4.0))
         self.wind_sigma = float(config.get("wind_sigma", 1.0))
         self.horizon = int(config.get("horizon", 500))
         self.failure_bonus = float(config.get("failure_bonus", 1000.0))
+
+        if self.victim_env not in {"cartpole", "stateless"}:
+            raise ValueError(
+                "victim_env must be either 'cartpole' or 'stateless', "
+                f"got {self.victim_env!r}"
+            )
 
         #standard CartPole physics parameters
         self.gravity = 9.8
@@ -84,10 +107,8 @@ class AdversarialCartPoleEnv(gym.Env):
     # Loads trained victim PPO
     def _ensure_victim_loaded(self):
         if self.victim_algo is None and self.victim_checkpoint:
-            tune.register_env(
-                "victim_stateless_cartpole",
-                make_stacked_stateless_cartpole,
-            )
+            tune.register_env(NORMAL_VICTIM_ENV_ID, make_cartpole)
+            tune.register_env(STATELESS_VICTIM_ENV_ID, make_stacked_stateless_cartpole)
             checkpoint = os.path.abspath(self.victim_checkpoint)
             self.victim_algo = Algorithm.from_checkpoint(checkpoint)
 
@@ -107,12 +128,20 @@ class AdversarialCartPoleEnv(gym.Env):
         )
 
     # Get victim observation
-    def _get_victim_obs(self):
+    def _get_stateless_victim_obs(self):
         x, _, theta, _ = self.state
         return np.array([x, theta], dtype=np.float32)
 
+    def _get_cartpole_victim_obs(self):
+        return np.asarray(self.state, dtype=np.float32)
+
     def _get_stacked_victim_obs(self):
         return stacked_observation(self.victim_obs_history, HISTORY_LEN)
+
+    def _get_victim_obs(self):
+        if self.victim_env == "cartpole":
+            return self._get_cartpole_victim_obs()
+        return self._get_stacked_victim_obs()
 
     # Get victim action
     def _victim_action(self):
@@ -121,7 +150,7 @@ class AdversarialCartPoleEnv(gym.Env):
             return int(self.np_random.integers(0, 2))
 
         action = self.victim_algo.compute_single_action(
-            self._get_stacked_victim_obs(),
+            self._get_victim_obs(),
             explore=False,
         )
         return int(np.asarray(action).item())
@@ -147,7 +176,7 @@ class AdversarialCartPoleEnv(gym.Env):
         self.previous_wind = 0.0
         self.abs_wind_sum = 0.0
         self.wind_penalty_sum = 0.0
-        self.victim_obs_history = [self._get_victim_obs()]
+        self.victim_obs_history = [self._get_stateless_victim_obs()]
         return self._get_obs(), {}
 
     # Step function. 
@@ -191,7 +220,7 @@ class AdversarialCartPoleEnv(gym.Env):
         self.steps += 1
         self.last_victim_action_sign = victim_action_sign
         self.previous_wind = wind
-        self.victim_obs_history.append(self._get_victim_obs())
+        self.victim_obs_history.append(self._get_stateless_victim_obs())
         self.victim_obs_history = self.victim_obs_history[-HISTORY_LEN:]
 
         # Victim fails if x-pos goes outside the +/- 2.4 threshold, or the pole exceeds 12 degrees in either direction
