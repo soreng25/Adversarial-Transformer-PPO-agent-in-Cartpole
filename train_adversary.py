@@ -96,20 +96,33 @@ def env_config(args):
         "failure_bonus": args.failure_bonus,
     }
 
+
+def configure_api_stack(config):
+    if not hasattr(config, "api_stack"):
+        return config
+
+    return config.api_stack(
+        enable_rl_module_and_learner=False,
+        enable_env_runner_and_connector_v2=False,
+    )
+
+
+def configure_rollout_workers(config, args):
+    if hasattr(config, "env_runners"):
+        return config.env_runners(num_env_runners=args.num_env_runners)
+
+    return config.rollouts(num_rollout_workers=args.num_env_runners)
+
+
 # Transformer architecture settings
 def build_config(args):
     num_gpus = 1 if torch.cuda.is_available() else 0
-    return (
-        PPOConfig()
-        .api_stack(
-            enable_rl_module_and_learner=False,
-            enable_env_runner_and_connector_v2=False,
-        )
+    config = (
+        configure_api_stack(PPOConfig())
         .resources(num_gpus=num_gpus)
         .environment(ADVERSARY_ENV_ID, env_config=env_config(args))
         .framework("torch")
         .debugging(seed=args.seed)
-        .env_runners(num_env_runners=args.num_env_runners)
         .callbacks(AdversaryMetricsCallback)
         .training(
             gamma=0.99,
@@ -128,6 +141,7 @@ def build_config(args):
             },
         )
     )
+    return configure_rollout_workers(config, args)
 
 #helper function to get final results after each iteration
 def result_value(result, key):
