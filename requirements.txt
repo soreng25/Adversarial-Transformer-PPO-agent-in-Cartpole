@@ -2,3 +2,4 @@ ray[rllib]==2.40.0
 torch==2.5.1
 gymnasium[classic-control]==1.0.0
 wandb>=0.18,<1
+matplotlib>=3.9,<4
