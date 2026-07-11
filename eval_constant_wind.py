@@ -1,4 +1,4 @@
-"""Evaluate a frozen victim policy under positive constant wind.
+"""Evaluate a frozen victim policy under constant wind.
 
 The same wind value is applied at every environment step. Success is measured
 by surviving at least a configurable number of steps, not necessarily the full
@@ -13,9 +13,9 @@ import ray
 from envs.adversarial_cartpole import AdversarialCartPoleEnv
 
 
-def wind_values(max_wind, step):
-    count = int(np.floor(max_wind / step))
-    values = [round(i * step, 10) for i in range(count + 1)]
+def wind_values(min_wind, max_wind, step):
+    count = int(np.floor((max_wind - min_wind) / step))
+    values = [round(min_wind + i * step, 10) for i in range(count + 1)]
     if not np.isclose(values[-1], max_wind):
         values.append(float(max_wind))
     return values
@@ -149,7 +149,7 @@ def save_histogram(episode_lengths, args):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Evaluate a frozen victim under positive constant wind."
+        description="Evaluate a frozen victim under constant wind."
     )
     parser.add_argument("--victim-checkpoint", default="checkpoints/victim")
     parser.add_argument(
@@ -160,6 +160,7 @@ def parse_args():
     )
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=1000)
+    parser.add_argument("--min-wind", type=float, default=0.0)
     parser.add_argument("--max-wind", type=float, default=4.0)
     parser.add_argument("--step", type=float, default=0.5)
     parser.add_argument("--tolerance", type=float, default=0.05)
@@ -190,8 +191,12 @@ def main():
         raise ValueError("--episodes must be positive")
     if args.step <= 0:
         raise ValueError("--step must be positive")
-    if args.max_wind < 0:
-        raise ValueError("--max-wind must be non-negative")
+    if args.min_wind > args.max_wind:
+        raise ValueError("--min-wind cannot be larger than --max-wind")
+    if args.min_wind > 0 or args.max_wind < 0:
+        raise ValueError("wind range must include 0.0 for baseline comparison")
+    if max(abs(args.min_wind), abs(args.max_wind)) > args.max_wind:
+        raise ValueError("absolute wind values cannot exceed --max-wind")
     if args.tolerance < 0:
         raise ValueError("--tolerance must be non-negative")
     if args.success_threshold <= 0:
@@ -205,12 +210,13 @@ def main():
     try:
         results = [
             evaluate_wind(wind, args)
-            for wind in wind_values(args.max_wind, args.step)
+            for wind in wind_values(args.min_wind, args.max_wind, args.step)
         ]
     finally:
         ray.shutdown()
 
-    baseline_success = results[0]["success_rate"]
+    baseline_result = next(result for result in results if np.isclose(result["wind"], 0.0))
+    baseline_success = baseline_result["success_rate"]
     cutoff = baseline_success - args.tolerance
     passing = [result for result in results if result["success_rate"] >= cutoff]
     max_passing_wind = max(result["wind"] for result in passing) if passing else None
@@ -225,7 +231,7 @@ def main():
     else:
         print(f"max_passing_wind={max_passing_wind:.2f}")
 
-    baseline_lengths = results[0]["episode_lengths"]
+    baseline_lengths = baseline_result["episode_lengths"]
     print()
     print("baseline_reward_stats:")
     print_reward_stats(reward_stats(baseline_lengths, args.success_threshold))
