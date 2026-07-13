@@ -19,6 +19,12 @@ def load_history(path):
     }
 
 
+def parse_episode_indices(value):
+    if not value:
+        return None
+    return [int(item.strip()) for item in value.split(",") if item.strip()]
+
+
 def plot_history(history, args):
     try:
         import matplotlib
@@ -39,11 +45,21 @@ def plot_history(history, args):
     std_wind = np.nanstd(winds, axis=0)
     max_wind = history["max_wind"]
 
+    if args.episodes is None:
+        episode_indices = list(range(winds.shape[0]))
+    else:
+        episode_indices = args.episodes
+        invalid = [idx for idx in episode_indices if idx < 0 or idx >= winds.shape[0]]
+        if invalid:
+            raise ValueError(f"episode indices out of range: {invalid}")
+
     plt.figure(figsize=(11, 6))
-    colors = plt.cm.tab20(np.linspace(0, 1, min(winds.shape[0], 20)))
-    for episode_idx, episode_winds in enumerate(winds):
+    colors = plt.cm.tab20(np.linspace(0, 1, min(len(episode_indices), 20)))
+    selected_winds = winds[episode_indices]
+    for plot_idx, episode_idx in enumerate(episode_indices):
+        episode_winds = winds[episode_idx]
         valid = ~np.isnan(episode_winds)
-        color = colors[episode_idx % len(colors)]
+        color = colors[plot_idx % len(colors)]
         if victim_failed[episode_idx]:
             label = f"ep {episode_idx} failed @ {failure_steps[episode_idx]}"
             linestyle = "-"
@@ -67,12 +83,21 @@ def plot_history(history, args):
         )
 
     if args.show_mean:
-        plt.plot(timesteps, mean_wind, color="black", linewidth=2.4, label="mean wind")
+        selected_mean = np.nanmean(selected_winds, axis=0)
+        plt.plot(
+            timesteps,
+            selected_mean,
+            color="black",
+            linewidth=2.4,
+            label="mean wind",
+        )
     if args.show_std:
+        selected_mean = np.nanmean(selected_winds, axis=0)
+        selected_std = np.nanstd(selected_winds, axis=0)
         plt.fill_between(
             timesteps,
-            mean_wind - std_wind,
-            mean_wind + std_wind,
+            selected_mean - selected_std,
+            selected_mean + selected_std,
             color="black",
             alpha=0.12,
             label="+/- 1 std",
@@ -91,7 +116,7 @@ def plot_history(history, args):
     plt.ylabel("applied wind")
     plt.title(
         "Adversary wind history "
-        f"({winds.shape[0]} episodes, max_wind={max_wind:g}, "
+        f"({len(episode_indices)} of {winds.shape[0]} episodes, max_wind={max_wind:g}, "
         f"sigma={history['wind_sigma']:g})"
     )
     plt.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8)
@@ -118,6 +143,11 @@ def parse_args():
     parser.add_argument("--out-path", default="adversary_wind_history.png")
     parser.add_argument("--dpi", type=int, default=150)
     parser.add_argument("--line-alpha", type=float, default=0.65)
+    parser.add_argument(
+        "--episodes",
+        type=parse_episode_indices,
+        help="Comma-separated episode indices to plot, for example 0,1.",
+    )
     parser.add_argument("--legend-episodes", type=int, default=20)
     parser.add_argument("--show-mean", action="store_true")
     parser.add_argument("--show-std", action="store_true")
