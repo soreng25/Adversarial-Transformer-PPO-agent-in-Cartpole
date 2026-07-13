@@ -5,9 +5,19 @@ import os
 
 import numpy as np
 import ray
+from ray import tune
 from ray.rllib.algorithms.algorithm import Algorithm
 
 from envs.adversarial_cartpole import AdversarialCartPoleEnv
+
+ADVERSARY_ENV_ID = "adversarial_cartpole"
+
+
+def register_env():
+    tune.register_env(
+        ADVERSARY_ENV_ID,
+        lambda env_config: AdversarialCartPoleEnv(env_config),
+    )
 
 
 def env_config(args):
@@ -197,6 +207,7 @@ def main():
     if args.bins <= 0:
         raise ValueError("--bins must be positive")
 
+    register_env()
     ray.init(ignore_reinit_error=True)
     try:
         if args.mode == "random":
