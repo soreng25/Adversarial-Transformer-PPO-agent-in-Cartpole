@@ -32,23 +32,42 @@ def plot_history(history, args):
         ) from exc
 
     winds = history["winds"]
+    victim_failed = history["victim_failed"]
+    failure_steps = history["failure_steps"]
     timesteps = np.arange(winds.shape[1])
     mean_wind = np.nanmean(winds, axis=0)
     std_wind = np.nanstd(winds, axis=0)
     max_wind = history["max_wind"]
 
     plt.figure(figsize=(11, 6))
-    for episode_winds in winds:
+    colors = plt.cm.tab20(np.linspace(0, 1, min(winds.shape[0], 20)))
+    for episode_idx, episode_winds in enumerate(winds):
         valid = ~np.isnan(episode_winds)
+        color = colors[episode_idx % len(colors)]
+        if victim_failed[episode_idx]:
+            label = f"ep {episode_idx} failed @ {failure_steps[episode_idx]}"
+            linestyle = "-"
+            linewidth = 1.6
+            alpha = min(1.0, args.line_alpha + 0.25)
+        else:
+            label = f"ep {episode_idx} survived"
+            linestyle = "-"
+            linewidth = 1.0
+            alpha = args.line_alpha
+        if episode_idx >= args.legend_episodes:
+            label = None
         plt.plot(
             timesteps[valid],
             episode_winds[valid],
-            color="tab:blue",
-            alpha=args.line_alpha,
-            linewidth=1.0,
+            color=color,
+            alpha=alpha,
+            linewidth=linewidth,
+            linestyle=linestyle,
+            label=label,
         )
 
-    plt.plot(timesteps, mean_wind, color="black", linewidth=2.4, label="mean wind")
+    if args.show_mean:
+        plt.plot(timesteps, mean_wind, color="black", linewidth=2.4, label="mean wind")
     if args.show_std:
         plt.fill_between(
             timesteps,
@@ -60,7 +79,7 @@ def plot_history(history, args):
         )
 
     if args.show_failures:
-        for failure_step in history["failure_steps"]:
+        for failure_step in failure_steps:
             if failure_step >= 0:
                 plt.axvline(failure_step, color="red", alpha=0.12, linewidth=1.0)
 
@@ -75,7 +94,7 @@ def plot_history(history, args):
         f"({winds.shape[0]} episodes, max_wind={max_wind:g}, "
         f"sigma={history['wind_sigma']:g})"
     )
-    plt.legend()
+    plt.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8)
     plt.tight_layout()
     plt.savefig(args.out_path, dpi=args.dpi)
     plt.close()
@@ -98,7 +117,9 @@ def parse_args():
     parser.add_argument("--input", required=True)
     parser.add_argument("--out-path", default="adversary_wind_history.png")
     parser.add_argument("--dpi", type=int, default=150)
-    parser.add_argument("--line-alpha", type=float, default=0.25)
+    parser.add_argument("--line-alpha", type=float, default=0.65)
+    parser.add_argument("--legend-episodes", type=int, default=20)
+    parser.add_argument("--show-mean", action="store_true")
     parser.add_argument("--show-std", action="store_true")
     parser.add_argument("--show-failures", action="store_true")
     return parser.parse_args()
