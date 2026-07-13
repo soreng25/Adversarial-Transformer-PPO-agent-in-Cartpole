@@ -10,6 +10,7 @@ import ray
 import torch
 from ray import tune
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
+from ray.rllib.algorithms.algorithm import Algorithm
 from ray.rllib.algorithms.ppo import PPOConfig
 
 from envs.adversarial_cartpole import AdversarialCartPoleEnv
@@ -187,6 +188,9 @@ def evaluate(algo, args):
 
     failures = 0
     failure_steps = []
+    wind_histories = []
+    episode_lengths = []
+    victim_failed_flags = []
     abs_wind_sum = 0.0
     penalty_sum = 0.0
     total_steps = 0
@@ -197,6 +201,7 @@ def evaluate(algo, args):
         state = policy.get_initial_state() #gets blank memory for start of episode
         done = False
         final_info = None
+        winds = []
 
         while not done: #keep running until the episode is done
             #explore=false means don't add randomness, use training policy cleanly
@@ -205,6 +210,7 @@ def evaluate(algo, args):
             obs, _, terminated, truncated, info = env.step(action)
             done = terminated or truncated #done if victim failed or horizon reached
             final_info = info #save info
+            winds.append(info["wind"])
 
             #update metrics
             total_steps += 1
@@ -212,6 +218,9 @@ def evaluate(algo, args):
             penalty_sum += info["wind_log_likelihood_penalty"]
             
         #increase failure count if victim failed
+        wind_histories.append(winds)
+        episode_lengths.append(final_info["episode_len"] if final_info else 0)
+        victim_failed_flags.append(bool(final_info and final_info["victim_failed"]))
         if final_info and final_info["victim_failed"]:
             failures += 1
             failure_steps.append(final_info["episode_len"])
@@ -232,6 +241,15 @@ def evaluate(algo, args):
     print(f"  average_failure_timestep={avg_failure_timestep}")
     print(f"  average_abs_wind={avg_abs_wind:.4f}")
     print(f"  average_wind_log_likelihood_penalty={avg_wind_penalty:.4f}")
+    if args.wind_history_out:
+        save_wind_history(
+            args.wind_history_out,
+            wind_histories,
+            episode_lengths,
+            victim_failed_flags,
+            args,
+        )
+        print(f"  wind_history_out={args.wind_history_out}")
     return {
         "episodes": args.eval_episodes,
         "failure_count": failures,
@@ -240,6 +258,31 @@ def evaluate(algo, args):
         "average_abs_wind": avg_abs_wind,
         "average_wind_log_likelihood_penalty": avg_wind_penalty,
     }
+
+
+def save_wind_history(path, wind_histories, episode_lengths, victim_failed_flags, args):
+    max_len = max((len(winds) for winds in wind_histories), default=0)
+    winds = np.full((len(wind_histories), max_len), np.nan, dtype=np.float32)
+    for episode_idx, episode_winds in enumerate(wind_histories):
+        winds[episode_idx, : len(episode_winds)] = episode_winds
+
+    failure_steps = np.array(
+        [
+            length if failed else -1
+            for length, failed in zip(episode_lengths, victim_failed_flags)
+        ],
+        dtype=np.int32,
+    )
+    np.savez(
+        path,
+        winds=winds,
+        episode_lengths=np.asarray(episode_lengths, dtype=np.int32),
+        victim_failed=np.asarray(victim_failed_flags, dtype=bool),
+        failure_steps=failure_steps,
+        max_wind=np.asarray(args.max_wind, dtype=np.float32),
+        wind_sigma=np.asarray(args.wind_sigma, dtype=np.float32),
+        horizon=np.asarray(args.horizon, dtype=np.int32),
+    )
 
 
 def maybe_init_wandb(args):
@@ -291,6 +334,9 @@ def parse_args():
     parser.add_argument("--num-env-runners", type=int, default=0)
     parser.add_argument("--out-dir", default="checkpoints/adversary")
     parser.add_argument("--eval-episodes", type=int, default=10)
+    parser.add_argument("--eval-only", action="store_true")
+    parser.add_argument("--checkpoint")
+    parser.add_argument("--wind-history-out")
     parser.add_argument("--max-wind", type=float, default=4.0)
     parser.add_argument("--wind-sigma", type=float, default=1.0)
     parser.add_argument("--horizon", type=int, default=500)
@@ -310,12 +356,23 @@ def parse_args():
 # main loop for TRAINING
 def main():
     args = parse_args()
+    if args.eval_only and not args.checkpoint:
+        raise ValueError("--eval-only requires --checkpoint")
     register_env()
     wandb_run = maybe_init_wandb(args)
     ray.init(ignore_reinit_error=True, num_gpus=1 if torch.cuda.is_available() else 0)
     algo = None
     best_failure_timestep = None
     try:
+        if args.eval_only:
+            algo = Algorithm.from_checkpoint(os.path.abspath(args.checkpoint))
+            eval_metrics = evaluate(algo, args)
+            if wandb_run is not None:
+                wandb_run.log(
+                    {f"eval/{key}": value for key, value in eval_metrics.items()}
+                )
+            return
+
         algo = build_config(args).build()
         for i in range(args.iters):
             start_time = time.perf_counter()
