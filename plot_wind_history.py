@@ -45,7 +45,11 @@ def plot_history(history, args):
     std_wind = np.nanstd(winds, axis=0)
     max_wind = history["max_wind"]
 
-    if args.episodes is None:
+    if args.failures_only:
+        episode_indices = np.flatnonzero(victim_failed).tolist()
+        if not episode_indices:
+            raise ValueError("no failed episodes found in the input history")
+    elif args.episodes is None:
         episode_indices = list(range(winds.shape[0]))
     else:
         episode_indices = args.episodes
@@ -70,7 +74,7 @@ def plot_history(history, args):
             linestyle = "-"
             linewidth = 1.0
             alpha = args.line_alpha
-        if episode_idx >= args.legend_episodes:
+        if plot_idx >= args.legend_episodes:
             label = None
         plt.plot(
             timesteps[valid],
@@ -104,7 +108,7 @@ def plot_history(history, args):
         )
 
     if args.show_failures:
-        for failure_step in failure_steps:
+        for failure_step in failure_steps[episode_indices]:
             if failure_step >= 0:
                 plt.axvline(failure_step, color="red", alpha=0.12, linewidth=1.0)
 
@@ -129,9 +133,14 @@ def print_summary(history, out_path):
     winds = history["winds"]
     episode_lengths = history["episode_lengths"]
     victim_failed = history["victim_failed"]
+    failed_indices = np.flatnonzero(victim_failed)
     print(f"episodes={winds.shape[0]}")
     print(f"failure_count={int(np.sum(victim_failed))}")
     print(f"failure_rate={np.mean(victim_failed):.3f}")
+    print(
+        "failed_episode_indices="
+        + ",".join(str(index) for index in failed_indices)
+    )
     print(f"average_episode_len={np.mean(episode_lengths):.1f}")
     print(f"average_abs_wind={np.nanmean(np.abs(winds)):.4f}")
     print(f"plot_path={out_path}")
@@ -148,6 +157,11 @@ def parse_args():
         type=parse_episode_indices,
         help="Comma-separated episode indices to plot, for example 0,1.",
     )
+    parser.add_argument(
+        "--failures-only",
+        action="store_true",
+        help="Plot every failed episode and omit surviving episodes.",
+    )
     parser.add_argument("--legend-episodes", type=int, default=20)
     parser.add_argument("--show-mean", action="store_true")
     parser.add_argument("--show-std", action="store_true")
@@ -159,6 +173,8 @@ def main():
     args = parse_args()
     if not os.path.exists(args.input):
         raise FileNotFoundError(args.input)
+    if args.failures_only and args.episodes is not None:
+        raise ValueError("use either --failures-only or --episodes, not both")
     history = load_history(args.input)
     plot_history(history, args)
     print_summary(history, args.out_path)
