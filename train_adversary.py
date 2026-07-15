@@ -323,7 +323,7 @@ def render_adversary_episode(algo, args, seed, env, render_env):
     }
 
 
-def maybe_log_wandb_videos(wandb_run, algo, args):
+def maybe_log_wandb_videos(wandb_run, algo, args, extra_payload=None):
     if not args.wandb_video:
         return
     if wandb_run is None:
@@ -331,7 +331,7 @@ def maybe_log_wandb_videos(wandb_run, algo, args):
 
     env = AdversarialCartPoleEnv(env_config(args))
     render_env = gym.make("CartPole-v1", render_mode="rgb_array")
-    video_payload = {}
+    video_payload = dict(extra_payload or {})
     try:
         for seed in args.wandb_video_seeds:
             rendered = render_adversary_episode(algo, args, seed, env, render_env)
@@ -578,11 +578,20 @@ def main():
         if args.eval_only:
             algo = Algorithm.from_checkpoint(os.path.abspath(args.checkpoint))
             eval_metrics = evaluate(algo, args)
-            if wandb_run is not None:
-                wandb_run.log(
-                    {f"eval/{key}": value for key, value in eval_metrics.items()}
+            eval_payload = {
+                f"eval/{key}": value for key, value in eval_metrics.items()
+            }
+            if args.wandb_video:
+                maybe_log_wandb_videos(
+                    wandb_run,
+                    algo,
+                    args,
+                    extra_payload=eval_payload,
                 )
-            maybe_log_wandb_videos(wandb_run, algo, args)
+            elif wandb_run is not None:
+                wandb_run.log(
+                    eval_payload
+                )
             return
 
         algo = build_config(args).build()
@@ -640,11 +649,20 @@ def main():
         if wandb_run is not None:
             wandb_run.summary["checkpoint_path"] = checkpoint_path(checkpoint)
         eval_metrics = evaluate(algo, args)
-        if wandb_run is not None:
-            wandb_run.log(
-                {f"eval/{key}": value for key, value in eval_metrics.items()}
+        eval_payload = {
+            f"eval/{key}": value for key, value in eval_metrics.items()
+        }
+        if args.wandb_video:
+            maybe_log_wandb_videos(
+                wandb_run,
+                algo,
+                args,
+                extra_payload=eval_payload,
             )
-        maybe_log_wandb_videos(wandb_run, algo, args)
+        elif wandb_run is not None:
+            wandb_run.log(
+                eval_payload
+            )
     finally:
         if algo is not None:
             algo.stop()
