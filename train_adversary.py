@@ -5,6 +5,7 @@ import math
 import os
 import time
 
+import gymnasium as gym
 import numpy as np
 import ray
 import torch
@@ -181,6 +182,184 @@ def compute_action(algo, obs, state, explore):
     action, state_out, _ = out #returns the action chosen and the updated state
     return action, state_out
 
+
+def parse_int_list(value):
+    return [int(item.strip()) for item in value.split(",") if item.strip()]
+
+
+def failure_reason(env):
+    x, _, theta, _ = env.state
+    if x < -env.x_threshold:
+        return "cart left"
+    if x > env.x_threshold:
+        return "cart right"
+    if theta < -env.theta_threshold_radians:
+        return "pole left"
+    if theta > env.theta_threshold_radians:
+        return "pole right"
+    return None
+
+
+def annotate_video_frame(frame, seed, timestep, wind, victim_action, status, max_wind):
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError as exc:
+        raise ImportError(
+            "Adversary video overlays require Pillow. Install it with "
+            "`pip install Pillow`."
+        ) from exc
+
+    image = Image.fromarray(frame)
+    draw = ImageDraw.Draw(image, "RGBA")
+    width, height = image.size
+    action_label = {0: "left", 1: "right"}.get(victim_action, "none")
+    status_label = status or "running"
+
+    draw.rectangle((0, 0, width, 48), fill=(255, 255, 255, 225))
+    draw.text(
+        (10, 8),
+        f"seed={seed}  step={timestep}  wind={wind:+.3f}  "
+        f"victim={action_label}  {status_label}",
+        fill=(15, 15, 15, 255),
+    )
+
+    origin_x = width // 2
+    arrow_y = height - 24
+    half_span = max(60, width // 5)
+    normalized_wind = wind / max_wind if max_wind else 0.0
+    end_x = origin_x + int(np.clip(normalized_wind, -1.0, 1.0) * half_span)
+    arrow_color = (210, 45, 45, 255) if wind >= 0 else (35, 90, 210, 255)
+    draw.rectangle(
+        (origin_x - half_span - 8, arrow_y - 13, origin_x + half_span + 8, arrow_y + 13),
+        fill=(255, 255, 255, 205),
+    )
+    draw.line((origin_x, arrow_y, end_x, arrow_y), fill=arrow_color, width=5)
+    if end_x != origin_x:
+        direction = 1 if end_x > origin_x else -1
+        draw.polygon(
+            [
+                (end_x, arrow_y),
+                (end_x - direction * 11, arrow_y - 7),
+                (end_x - direction * 11, arrow_y + 7),
+            ],
+            fill=arrow_color,
+        )
+    return np.asarray(image)
+
+
+def render_adversary_episode(algo, args, seed, env, render_env):
+    policy = algo.get_policy()
+    frames = []
+    final_info = {}
+    final_failure_reason = None
+
+    try:
+        obs, _ = env.reset(seed=seed)
+        render_env.reset(seed=seed)
+        render_env.unwrapped.state = np.asarray(env.state, dtype=np.float64).copy()
+        state = policy.get_initial_state()
+        initial_frame = render_env.render()
+        frames.append(
+            annotate_video_frame(
+                initial_frame,
+                seed,
+                timestep=0,
+                wind=0.0,
+                victim_action=None,
+                status="initial state",
+                max_wind=args.max_wind,
+            )
+        )
+
+        done = False
+        while not done:
+            action, state = compute_action(algo, obs, state, explore=False)
+            obs, _, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+            final_info = info
+            if info["victim_failed"]:
+                final_failure_reason = failure_reason(env)
+
+            should_render = (
+                info["episode_len"] % args.wandb_video_frame_skip == 0 or done
+            )
+            if should_render:
+                render_env.unwrapped.state = np.asarray(
+                    env.state,
+                    dtype=np.float64,
+                ).copy()
+                frame = render_env.render()
+                status = (
+                    f"FAILED: {final_failure_reason}"
+                    if final_failure_reason
+                    else ("survived" if truncated else None)
+                )
+                frames.append(
+                    annotate_video_frame(
+                        frame,
+                        seed,
+                        timestep=info["episode_len"],
+                        wind=info["wind"],
+                        victim_action=info["victim_action"],
+                        status=status,
+                        max_wind=args.max_wind,
+                    )
+                )
+
+        if frames:
+            frames.extend([frames[-1]] * max(1, args.wandb_video_fps // 2))
+    except gym.error.DependencyNotInstalled as exc:
+        raise ImportError(
+            "CartPole video rendering requires pygame. Install it with "
+            "`pip install \"gymnasium[classic-control]\"`."
+        ) from exc
+
+    video = np.stack(frames).transpose(0, 3, 1, 2)
+    return {
+        "video": video,
+        "episode_len": int(final_info.get("episode_len", 0)),
+        "victim_failed": bool(final_info.get("victim_failed", False)),
+        "failure_reason": final_failure_reason,
+    }
+
+
+def maybe_log_wandb_videos(wandb_run, algo, args):
+    if not args.wandb_video:
+        return
+    if wandb_run is None:
+        raise ValueError("--wandb-video requires --wandb")
+
+    env = AdversarialCartPoleEnv(env_config(args))
+    render_env = gym.make("CartPole-v1", render_mode="rgb_array")
+    try:
+        for seed in args.wandb_video_seeds:
+            rendered = render_adversary_episode(algo, args, seed, env, render_env)
+            key = f"video/seed_{seed}"
+            wandb_run.log(
+                {
+                    key: wandb.Video(
+                        rendered["video"],
+                        fps=args.wandb_video_fps,
+                        format="mp4",
+                    ),
+                    f"video_metrics/seed_{seed}/episode_len": rendered["episode_len"],
+                    f"video_metrics/seed_{seed}/victim_failed": float(
+                        rendered["victim_failed"]
+                    ),
+                    f"video_metrics/seed_{seed}/failure_reason": (
+                        rendered["failure_reason"] or "none"
+                    ),
+                }
+            )
+            print(
+                f"wandb video seed={seed}  episode_len={rendered['episode_len']}  "
+                f"victim_failed={rendered['victim_failed']}  "
+                f"failure_reason={rendered['failure_reason']}"
+            )
+    finally:
+        render_env.close()
+        env.close()
+
 # tests adversary after training
 def evaluate(algo, args):
     env = AdversarialCartPoleEnv(env_config(args)) #creates new environment for evaluation
@@ -308,6 +487,10 @@ def maybe_init_wandb(args):
         "wind_sigma": args.wind_sigma,
         "horizon": args.horizon,
         "failure_bonus": args.failure_bonus,
+        "wandb_video": args.wandb_video,
+        "wandb_video_seeds": args.wandb_video_seeds,
+        "wandb_video_fps": args.wandb_video_fps,
+        "wandb_video_frame_skip": args.wandb_video_frame_skip,
     }
     return wandb.init(
         project=args.wandb_project,
@@ -350,6 +533,24 @@ def parse_args():
         choices=["online", "offline", "disabled"],
         default="online",
     )
+    parser.add_argument(
+        "--wandb-video",
+        action="store_true",
+        help="Log deterministic adversary rollout videos during final evaluation.",
+    )
+    parser.add_argument(
+        "--wandb-video-seeds",
+        type=parse_int_list,
+        default=parse_int_list("1004,1044,1006,1000"),
+        help="Comma-separated absolute environment seeds to render.",
+    )
+    parser.add_argument("--wandb-video-fps", type=int, default=25)
+    parser.add_argument(
+        "--wandb-video-frame-skip",
+        type=int,
+        default=2,
+        help="Render every Nth environment step; 2 at 25 FPS preserves real time.",
+    )
     return parser.parse_args()
 
 
@@ -358,6 +559,16 @@ def main():
     args = parse_args()
     if args.eval_only and not args.checkpoint:
         raise ValueError("--eval-only requires --checkpoint")
+    if args.wandb_video and not args.wandb:
+        raise ValueError("--wandb-video requires --wandb")
+    if not args.wandb_video_seeds:
+        raise ValueError("--wandb-video-seeds must include at least one seed")
+    if any(seed < 0 for seed in args.wandb_video_seeds):
+        raise ValueError("--wandb-video-seeds cannot contain negative seeds")
+    if args.wandb_video_fps <= 0:
+        raise ValueError("--wandb-video-fps must be positive")
+    if args.wandb_video_frame_skip <= 0:
+        raise ValueError("--wandb-video-frame-skip must be positive")
     register_env()
     wandb_run = maybe_init_wandb(args)
     ray.init(ignore_reinit_error=True, num_gpus=1 if torch.cuda.is_available() else 0)
@@ -371,6 +582,7 @@ def main():
                 wandb_run.log(
                     {f"eval/{key}": value for key, value in eval_metrics.items()}
                 )
+            maybe_log_wandb_videos(wandb_run, algo, args)
             return
 
         algo = build_config(args).build()
@@ -432,6 +644,7 @@ def main():
             wandb_run.log(
                 {f"eval/{key}": value for key, value in eval_metrics.items()}
             )
+        maybe_log_wandb_videos(wandb_run, algo, args)
     finally:
         if algo is not None:
             algo.stop()
