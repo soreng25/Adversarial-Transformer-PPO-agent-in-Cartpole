@@ -331,31 +331,31 @@ def maybe_log_wandb_videos(wandb_run, algo, args):
 
     env = AdversarialCartPoleEnv(env_config(args))
     render_env = gym.make("CartPole-v1", render_mode="rgb_array")
+    video_payload = {}
     try:
         for seed in args.wandb_video_seeds:
             rendered = render_adversary_episode(algo, args, seed, env, render_env)
             key = f"video/seed_{seed}"
-            wandb_run.log(
-                {
-                    key: wandb.Video(
-                        rendered["video"],
-                        fps=args.wandb_video_fps,
-                        format="mp4",
-                    ),
-                    f"video_metrics/seed_{seed}/episode_len": rendered["episode_len"],
-                    f"video_metrics/seed_{seed}/victim_failed": float(
-                        rendered["victim_failed"]
-                    ),
-                    f"video_metrics/seed_{seed}/failure_reason": (
-                        rendered["failure_reason"] or "none"
-                    ),
-                }
+            video_payload[key] = wandb.Video(
+                rendered["video"],
+                fps=args.wandb_video_fps,
+                format="mp4",
+            )
+            video_payload[f"video_metrics/seed_{seed}/episode_len"] = rendered[
+                "episode_len"
+            ]
+            video_payload[f"video_metrics/seed_{seed}/victim_failed"] = float(
+                rendered["victim_failed"]
+            )
+            video_payload[f"video_metrics/seed_{seed}/failure_reason"] = (
+                rendered["failure_reason"] or "none"
             )
             print(
                 f"wandb video seed={seed}  episode_len={rendered['episode_len']}  "
                 f"victim_failed={rendered['victim_failed']}  "
                 f"failure_reason={rendered['failure_reason']}"
             )
+        wandb_run.log(video_payload)
     finally:
         render_env.close()
         env.close()
