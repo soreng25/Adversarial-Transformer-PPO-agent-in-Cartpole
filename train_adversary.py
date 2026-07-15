@@ -247,7 +247,30 @@ def annotate_video_frame(frame, seed, timestep, wind, victim_action, status, max
     return np.asarray(image)
 
 
-def render_adversary_episode(algo, args, seed, env, render_env):
+def save_video_file(frames, path, fps):
+    try:
+        from moviepy.editor import ImageSequenceClip
+    except ImportError as exc:
+        raise ImportError(
+            "Saving adversary videos requires MoviePy 1.x. Install it with "
+            "`pip install \"moviepy>=1,<2\"`."
+        ) from exc
+
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    clip = ImageSequenceClip(frames, fps=fps)
+    try:
+        clip.write_videofile(
+            path,
+            codec="libx264",
+            audio=False,
+            ffmpeg_params=["-pix_fmt", "yuv420p"],
+            logger=None,
+        )
+    finally:
+        clip.close()
+
+
+def render_adversary_episode(algo, args, seed, env, render_env, video_path):
     policy = algo.get_policy()
     frames = []
     final_info = {}
@@ -314,9 +337,9 @@ def render_adversary_episode(algo, args, seed, env, render_env):
             "`pip install \"gymnasium[classic-control]\"`."
         ) from exc
 
-    video = np.stack(frames).transpose(0, 3, 1, 2)
+    save_video_file(frames, video_path, args.wandb_video_fps)
     return {
-        "video": video,
+        "video_path": os.path.abspath(video_path),
         "episode_len": int(final_info.get("episode_len", 0)),
         "victim_failed": bool(final_info.get("victim_failed", False)),
         "failure_reason": final_failure_reason,
@@ -332,14 +355,32 @@ def maybe_log_wandb_videos(wandb_run, algo, args, extra_payload=None):
     env = AdversarialCartPoleEnv(env_config(args))
     render_env = gym.make("CartPole-v1", render_mode="rgb_array")
     video_payload = dict(extra_payload or {})
+    logged_videos = []
+    video_dir = os.path.abspath(
+        os.path.join(args.wandb_video_out_dir, wandb_run.id)
+    )
+    os.makedirs(video_dir, exist_ok=True)
     try:
         for seed in args.wandb_video_seeds:
-            rendered = render_adversary_episode(algo, args, seed, env, render_env)
-            key = f"video/seed_{seed}"
-            video_payload[key] = wandb.Video(
-                rendered["video"],
-                fps=args.wandb_video_fps,
-                format="mp4",
+            video_path = os.path.join(video_dir, f"adversary_seed_{seed}.mp4")
+            rendered = render_adversary_episode(
+                algo,
+                args,
+                seed,
+                env,
+                render_env,
+                video_path,
+            )
+            outcome = (
+                f"failed at {rendered['episode_len']}: {rendered['failure_reason']}"
+                if rendered["victim_failed"]
+                else f"survived {rendered['episode_len']} steps"
+            )
+            logged_videos.append(
+                wandb.Video(
+                    rendered["video_path"],
+                    caption=f"seed {seed} - {outcome}",
+                )
             )
             video_payload[f"video_metrics/seed_{seed}/episode_len"] = rendered[
                 "episode_len"
@@ -355,7 +396,16 @@ def maybe_log_wandb_videos(wandb_run, algo, args, extra_payload=None):
                 f"victim_failed={rendered['victim_failed']}  "
                 f"failure_reason={rendered['failure_reason']}"
             )
+        video_payload["adversary_rollout_videos"] = logged_videos
         wandb_run.log(video_payload)
+
+        artifact = wandb.Artifact(
+            name=f"adversary-rollout-videos-{wandb_run.id}",
+            type="adversary-videos",
+        )
+        artifact.add_dir(video_dir)
+        wandb_run.log_artifact(artifact)
+        print(f"local_video_dir={video_dir}")
     finally:
         render_env.close()
         env.close()
@@ -491,6 +541,7 @@ def maybe_init_wandb(args):
         "wandb_video_seeds": args.wandb_video_seeds,
         "wandb_video_fps": args.wandb_video_fps,
         "wandb_video_frame_skip": args.wandb_video_frame_skip,
+        "wandb_video_out_dir": args.wandb_video_out_dir,
     }
     return wandb.init(
         project=args.wandb_project,
@@ -546,6 +597,11 @@ def parse_args():
     )
     parser.add_argument("--wandb-video-fps", type=int, default=25)
     parser.add_argument(
+        "--wandb-video-out-dir",
+        default="adversary_videos",
+        help="Directory for persistent MP4 copies of rendered adversary rollouts.",
+    )
+    parser.add_argument(
         "--wandb-video-frame-skip",
         type=int,
         default=2,
@@ -569,6 +625,8 @@ def main():
         raise ValueError("--wandb-video-fps must be positive")
     if args.wandb_video_frame_skip <= 0:
         raise ValueError("--wandb-video-frame-skip must be positive")
+    if not args.wandb_video_out_dir.strip():
+        raise ValueError("--wandb-video-out-dir cannot be empty")
     register_env()
     wandb_run = maybe_init_wandb(args)
     ray.init(ignore_reinit_error=True, num_gpus=1 if torch.cuda.is_available() else 0)
