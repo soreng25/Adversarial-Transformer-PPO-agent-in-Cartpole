@@ -65,9 +65,22 @@ python mcmc_failure_trace.py
 
 The source trace is replayed before sampling, so the command fails clearly if
 the selected environment seed or victim checkpoint does not reproduce the
-recorded failure. The resulting raw chain can be plotted after optional
-burn-in and thinning:
+recorded failure. Every run writes the full statistical chain to NPZ and a
+long-form CSV containing the initial trace plus every accepted failure trace;
+use `--csv-output` to override the derived CSV filename. The resulting raw
+chain can be plotted after optional burn-in and thinning:
 
 ```bash
 python plot_wind_history.py --input episode_6_mcmc.npz --burn-in 1000 --thin 10 --show-mean
 ```
+
+The generated CSV can be plotted directly as well (use `python3` on Ananke):
+
+```bash
+python3 plot_wind_history.py --input episode_6_mcmc.csv --out-path episode_6_mcmc.png
+```
+
+CSV plots contain the initial trace and each newly accepted failure trace. For
+a less crowded plot, add `--thin 10`; add `--show-mean` to overlay their mean
+wind at each timestep. The MCMC completion summary prints a ready-to-copy plot
+command using the actual CSV filename.

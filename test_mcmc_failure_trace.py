@@ -1,3 +1,6 @@
+import csv
+import os
+import tempfile
 import unittest
 
 import numpy as np
@@ -9,6 +12,7 @@ from mcmc_failure_trace import (
     log_natural_density,
     propose_trace,
     run_mcmc,
+    save_chain_csv,
 )
 
 
@@ -127,6 +131,33 @@ class ChainTests(unittest.TestCase):
                 result.chain[index + 1],
                 result.chain[index],
             )
+
+    def test_csv_contains_initial_and_accepted_applied_winds(self):
+        result = self.run_chain(seed=13)
+        expected_trace_count = 1 + int(np.sum(result.accepted))
+        expected_data_rows = int(result.failure_steps[0])
+        expected_data_rows += int(
+            np.sum(result.failure_steps[1:][result.accepted])
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = os.path.join(temp_dir, "chain.csv")
+            trace_count = save_chain_csv(path, result)
+            with open(path, newline="") as csv_file:
+                rows = list(csv.reader(csv_file))
+
+        self.assertEqual(trace_count, expected_trace_count)
+        self.assertEqual(
+            rows[0],
+            [
+                "trace_id",
+                "chain_iteration",
+                "failure_step",
+                "timestep",
+                "wind",
+            ],
+        )
+        self.assertEqual(len(rows) - 1, expected_data_rows)
 
 
 if __name__ == "__main__":

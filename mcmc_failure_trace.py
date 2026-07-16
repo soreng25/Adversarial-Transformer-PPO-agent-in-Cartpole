@@ -7,6 +7,7 @@ separate from the standard deviation of the natural-wind target distribution.
 """
 
 import argparse
+import csv
 import os
 from dataclasses import dataclass
 
@@ -76,7 +77,7 @@ def load_victim_policy(checkpoint):
             )
     return VictimPolicyRunner(restored)
 
-
+# Loads the original starting trace, appends zeros until the target horizon
 def load_source_trace(path, episode_index, target_horizon, expected_sigma):
     """Load one failed episode and zero-pad it to ``target_horizon``."""
     with np.load(path) as data:
@@ -145,15 +146,16 @@ def load_source_trace(path, episode_index, target_horizon, expected_sigma):
         source_horizon=source_horizon,
     )
 
-
+#uses sigma=1.0 because we want to see how likely each wind trace value is under natural wind distribution
 def log_natural_density(trace, sigma):
     """Return the Gaussian log density up to a fixed-length constant."""
     if sigma <= 0:
         raise ValueError("sigma must be positive")
     trace = np.asarray(trace, dtype=np.float64)
+    # returns the logscore of that failure trace
     return -0.5 * float(np.sum((trace / sigma) ** 2))
 
-
+# takes min of e^0=1 and e^log ratio = log(q(x')) - log(q(x))
 def acceptance_probability(current_log_score, proposed_log_score):
     """Compute ``min(1, exp(proposed - current))`` without overflow."""
     if np.isneginf(proposed_log_score):
@@ -161,16 +163,22 @@ def acceptance_probability(current_log_score, proposed_log_score):
     log_ratio = proposed_log_score - current_log_score
     return float(np.exp(min(0.0, log_ratio)))
 
-
+# Proposes candidate. Adds Gaussian noise w/ sigma=0.01 to every entry in the current trace
 def propose_trace(current, rng, sigma, mode="all", block_size=10):
     """Draw a symmetric Gaussian random-walk proposal."""
     if sigma <= 0:
         raise ValueError("proposal sigma must be positive")
 
+    #current trace
     current = np.asarray(current, dtype=np.float64)
-    proposed = current.copy()
+    proposed = current.copy() #copy the current trace
+
+    #apply gaussian noise using sigma=0.01 to the entire proposed trace
     if mode == "all":
         proposed += rng.normal(0.0, sigma, size=current.shape)
+
+
+    #this stuff doesn't matter
     elif mode == "single":
         index = int(rng.integers(0, len(current)))
         proposed[index] += rng.normal(0.0, sigma)
@@ -189,12 +197,12 @@ def propose_trace(current, rng, sigma, mode="all", block_size=10):
         raise ValueError(f"unknown proposal mode: {mode!r}")
     return proposed
 
-
+# Ensures no wind in the proposed candidate exceeds maxwind = 1.0
 def is_in_bounds(trace, max_wind):
     """Return whether all winds lie in the target's bounded domain."""
     return bool(np.all(np.abs(trace) <= max_wind))
 
-
+# Apply wind trace to the victim to see if it fails. Returns True if victim fails, False otherwise, and returns any timestep of failure
 def replay_trace(env, trace, env_seed):
     """Replay a fixed wind vector and report failure and terminal timestep."""
     env.reset(seed=env_seed)
@@ -220,11 +228,13 @@ def run_mcmc(
     progress_every=0,
 ):
     """Run a fixed-dimensional random-walk Metropolis chain."""
+
     if iterations < 1:
         raise ValueError("iterations must be positive")
     if max_wind <= 0:
         raise ValueError("max_wind must be positive")
 
+    #verify that the starting trace causes failure
     current = np.asarray(initial_trace, dtype=np.float64).copy()
     if not is_in_bounds(current, max_wind):
         raise ValueError("initial trace is outside the wind bounds")
@@ -235,7 +245,8 @@ def run_mcmc(
             f"horizon (replay reached step {current_failure_step}); verify "
             "--env-seed, --victim-checkpoint, and --victim-env"
         )
-    current_log_score = log_natural_density(current, natural_wind_sigma)
+
+    current_log_score = log_natural_density(current, natural_wind_sigma) #get log score
 
     trace_length = len(current)
     chain = np.empty((iterations + 1, trace_length), dtype=np.float32)
@@ -252,6 +263,7 @@ def run_mcmc(
     failure_steps[0] = current_failure_step
     log_scores[0] = current_log_score
 
+    #for num of iterations, propose a new candidate
     for iteration in range(iterations):
         proposed = propose_trace(
             current,
@@ -261,33 +273,43 @@ def run_mcmc(
             block_size=block_size,
         )
 
+        # ensure that candidate is in bounds
         if not is_in_bounds(proposed, max_wind):
             proposal_out_of_bounds[iteration] = True
         else:
+            # replay candidate to make sure it fails
             failed, failure_step = replay(proposed)
-            proposal_failed[iteration] = failed
-            proposal_failure_steps[iteration] = failure_step
-            if failed:
+            proposal_failed[iteration] = failed #get failure status
+            proposal_failure_steps[iteration] = failure_step #get failure step
+            if failed: # if it failed then get the log score of the proposed candidate
                 proposed_log_score = log_natural_density(
                     proposed,
                     natural_wind_sigma,
                 )
-                proposal_log_scores[iteration] = proposed_log_score
+                proposal_log_scores[iteration] = proposed_log_score #get log score of proposed candidate
+
+                # get acceptance probability
+                # since the logscores are negative, the one thats larger and closer to 0 is more likely
+                # if the delta is positive, the proposed logscore is higher and more likely, thus min=e^0=1 so it will be accepted
+                # if delta is negative, proposed logscore is lower and less likely, so probability is proportional to how much less likely it is
                 alpha = acceptance_probability(
                     current_log_score,
                     proposed_log_score,
                 )
                 acceptance_probabilities[iteration] = alpha
+                # if the proposed candidate is accepted based on uniformly selected randon number, update the current trace to the proposed trace
                 if rng.uniform() < alpha:
                     current = proposed
                     current_failure_step = failure_step
                     current_log_score = proposed_log_score
                     accepted[iteration] = True
 
+        # otherwise continue the chain with the current one
         chain[iteration + 1] = current
         failure_steps[iteration + 1] = current_failure_step
         log_scores[iteration + 1] = current_log_score
 
+        # just for printing stuff
         if progress_every and (iteration + 1) % progress_every == 0:
             completed = iteration + 1
             print(
@@ -308,7 +330,7 @@ def run_mcmc(
         acceptance_probabilities=acceptance_probabilities,
     )
 
-
+# Keeps track of Markov chain of failure traces
 def save_chain(path, result, source, args):
     """Save the raw chain in both MCMC-specific and plot-compatible fields."""
     output_dir = os.path.dirname(os.path.abspath(path))
@@ -347,7 +369,46 @@ def save_chain(path, result, source, args):
     )
 
 
-def print_summary(result, source, args):
+def save_chain_csv(path, result):
+    """Save the initial and accepted failure traces in long-form CSV."""
+    output_dir = os.path.dirname(os.path.abspath(path))
+    os.makedirs(output_dir, exist_ok=True)
+    chain_indices = np.concatenate(
+        (
+            np.array([0], dtype=np.int64),
+            np.flatnonzero(result.accepted).astype(np.int64) + 1,
+        )
+    )
+
+    with open(path, "w", newline="") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(
+            [
+                "trace_id",
+                "chain_iteration",
+                "failure_step",
+                "timestep",
+                "wind",
+            ]
+        )
+        for trace_id, chain_iteration in enumerate(chain_indices):
+            failure_step = int(result.failure_steps[chain_iteration])
+            trace = result.chain[chain_iteration]
+            for timestep, wind in enumerate(trace[:failure_step], start=1):
+                writer.writerow(
+                    [
+                        trace_id,
+                        int(chain_iteration),
+                        failure_step,
+                        timestep,
+                        float(wind),
+                    ]
+                )
+
+    return len(chain_indices)
+
+
+def print_summary(result, source, args, csv_output, csv_trace_count):
     print("MCMC failure-trace sampling complete:")
     print(f"  source_episode_index={source.episode_index}")
     print(f"  source_failure_step={source.failure_step}")
@@ -367,6 +428,13 @@ def print_summary(result, source, args):
     print(f"  max_failure_step={int(np.max(result.failure_steps))}")
     print(f"  mean_failure_step={float(np.mean(result.failure_steps)):.2f}")
     print(f"  output={args.output}")
+    print(f"  csv_output={csv_output}")
+    print(f"  csv_failure_trace_count={csv_trace_count}")
+    plot_output = os.path.splitext(csv_output)[0] + ".png"
+    print(
+        "  plot_command=python3 plot_wind_history.py "
+        f"--input {csv_output} --out-path {plot_output}"
+    )
 
 
 def parse_args():
@@ -398,6 +466,10 @@ def parse_args():
     parser.add_argument("--mcmc-seed", type=int, default=123)
     parser.add_argument("--progress-every", type=int, default=100)
     parser.add_argument("--output", default="episode_6_mcmc.npz")
+    parser.add_argument(
+        "--csv-output",
+        help="CSV path; defaults to the NPZ output path with a .csv suffix.",
+    )
     return parser.parse_args()
 
 
@@ -468,7 +540,9 @@ def main():
         env.close()
 
     save_chain(args.output, result, source, args)
-    print_summary(result, source, args)
+    csv_output = args.csv_output or os.path.splitext(args.output)[0] + ".csv"
+    csv_trace_count = save_chain_csv(csv_output, result)
+    print_summary(result, source, args, csv_output, csv_trace_count)
 
 
 if __name__ == "__main__":
