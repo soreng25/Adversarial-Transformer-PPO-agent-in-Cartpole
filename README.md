@@ -51,3 +51,23 @@ python train_adversary.py --victim-checkpoint checkpoints/victim --iters 10
 The adversary controls a one-dimensional wind force added to the CartPole
 dynamics. It prints failure rate, episode length, mean absolute wind, and the
 average Gaussian wind log-likelihood penalty.
+
+## MCMC failure-trace sampling
+
+`mcmc_failure_trace.py` runs a random-walk Metropolis chain initialized from
+episode 6 in `adversary_wind_history_same_seeds.npz`. The 289-step failure is
+zero-padded to 350 winds, and proposals use a standard deviation of `0.01`
+while the natural-wind target retains its saved standard deviation of `1.0`.
+
+```bash
+python mcmc_failure_trace.py
+```
+
+The source trace is replayed before sampling, so the command fails clearly if
+the selected environment seed or victim checkpoint does not reproduce the
+recorded failure. The resulting raw chain can be plotted after optional
+burn-in and thinning:
+
+```bash
+python plot_wind_history.py --input episode_6_mcmc.npz --burn-in 1000 --thin 10 --show-mean
+```

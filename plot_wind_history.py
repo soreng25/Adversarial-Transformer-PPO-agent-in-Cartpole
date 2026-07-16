@@ -8,7 +8,7 @@ import numpy as np
 
 def load_history(path):
     data = np.load(path)
-    return {
+    history = {
         "winds": data["winds"],
         "episode_lengths": data["episode_lengths"],
         "victim_failed": data["victim_failed"],
@@ -17,6 +17,13 @@ def load_history(path):
         "wind_sigma": float(data["wind_sigma"]),
         "horizon": int(data["horizon"]),
     }
+    if "source_episode_index" in data.files:
+        history["source_episode_index"] = int(data["source_episode_index"])
+    if "accepted" in data.files:
+        history["accepted"] = data["accepted"]
+    if "proposal_failed" in data.files:
+        history["proposal_failed"] = data["proposal_failed"]
+    return history
 
 
 def parse_episode_indices(value):
@@ -45,12 +52,14 @@ def plot_history(history, args):
     std_wind = np.nanstd(winds, axis=0)
     max_wind = history["max_wind"]
 
+    eligible_indices = np.arange(winds.shape[0])[args.burn_in :: args.thin]
+
     if args.failures_only:
-        episode_indices = np.flatnonzero(victim_failed).tolist()
+        episode_indices = eligible_indices[victim_failed[eligible_indices]].tolist()
         if not episode_indices:
             raise ValueError("no failed episodes found in the input history")
     elif args.episodes is None:
-        episode_indices = list(range(winds.shape[0]))
+        episode_indices = eligible_indices.tolist()
     else:
         episode_indices = args.episodes
         invalid = [idx for idx in episode_indices if idx < 0 or idx >= winds.shape[0]]
@@ -118,10 +127,16 @@ def plot_history(history, args):
     plt.ylim(-max_wind * 1.1, max_wind * 1.1)
     plt.xlabel("timestep")
     plt.ylabel("applied wind")
+    if "source_episode_index" in history:
+        title_prefix = (
+            f"MCMC wind traces from episode {history['source_episode_index']}"
+        )
+    else:
+        title_prefix = "Adversary wind history"
     plt.title(
-        "Adversary wind history "
-        f"({len(episode_indices)} of {winds.shape[0]} episodes, max_wind={max_wind:g}, "
-        f"sigma={history['wind_sigma']:g})"
+        f"{title_prefix} "
+        f"({len(episode_indices)} of {winds.shape[0]} samples, "
+        f"max_wind={max_wind:g}, sigma={history['wind_sigma']:g})"
     )
     plt.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8)
     plt.tight_layout()
@@ -129,7 +144,7 @@ def plot_history(history, args):
     plt.close()
 
 
-def print_summary(history, out_path):
+def print_summary(history, out_path, args):
     winds = history["winds"]
     episode_lengths = history["episode_lengths"]
     victim_failed = history["victim_failed"]
@@ -143,6 +158,15 @@ def print_summary(history, out_path):
     )
     print(f"average_episode_len={np.mean(episode_lengths):.1f}")
     print(f"average_abs_wind={np.nanmean(np.abs(winds)):.4f}")
+    retained_count = len(np.arange(winds.shape[0])[args.burn_in :: args.thin])
+    print(f"retained_after_burn_in_and_thinning={retained_count}")
+    if "accepted" in history:
+        print(f"mcmc_acceptance_rate={np.mean(history['accepted']):.4f}")
+    if "proposal_failed" in history:
+        print(
+            "mcmc_proposal_failure_rate="
+            f"{np.mean(history['proposal_failed']):.4f}"
+        )
     print(f"plot_path={out_path}")
 
 
@@ -166,6 +190,18 @@ def parse_args():
     parser.add_argument("--show-mean", action="store_true")
     parser.add_argument("--show-std", action="store_true")
     parser.add_argument("--show-failures", action="store_true")
+    parser.add_argument(
+        "--burn-in",
+        type=int,
+        default=0,
+        help="Skip this many initial samples before plotting.",
+    )
+    parser.add_argument(
+        "--thin",
+        type=int,
+        default=1,
+        help="Plot every Nth sample after burn-in.",
+    )
     return parser.parse_args()
 
 
@@ -175,9 +211,17 @@ def main():
         raise FileNotFoundError(args.input)
     if args.failures_only and args.episodes is not None:
         raise ValueError("use either --failures-only or --episodes, not both")
+    if args.burn_in < 0:
+        raise ValueError("--burn-in cannot be negative")
+    if args.thin <= 0:
+        raise ValueError("--thin must be positive")
+    if args.episodes is not None and (args.burn_in != 0 or args.thin != 1):
+        raise ValueError("--episodes cannot be combined with --burn-in or --thin")
     history = load_history(args.input)
+    if args.burn_in >= history["winds"].shape[0]:
+        raise ValueError("--burn-in removes every available sample")
     plot_history(history, args)
-    print_summary(history, args.out_path)
+    print_summary(history, args.out_path, args)
 
 
 if __name__ == "__main__":
