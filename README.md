@@ -63,6 +63,18 @@ while the natural-wind target retains its saved standard deviation of `1.0`.
 python mcmc_failure_trace.py
 ```
 
+To target a different assumed natural-wind distribution, set its standard
+deviation independently of the MCMC proposal standard deviation:
+
+```bash
+python3 mcmc_failure_trace.py --natural-wind-sigma 0.5 --proposal-sigma 0.01
+```
+
+The source NPZ sigma is retained as metadata, but it no longer restricts the
+target sigma. `--natural-wind-sigma` controls the Gaussian log score used in
+Metropolis acceptance; `--proposal-sigma` controls only the size of candidate
+perturbations.
+
 The source trace is replayed before sampling, so the command fails clearly if
 the selected environment seed or victim checkpoint does not reproduce the
 recorded failure. Every run writes the full statistical chain to NPZ and a

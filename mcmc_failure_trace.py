@@ -26,7 +26,7 @@ class SourceTrace:
     episode_length: int
     failure_step: int
     max_wind: float
-    natural_wind_sigma: float
+    source_wind_sigma: float
     source_horizon: int
 
 
@@ -78,7 +78,7 @@ def load_victim_policy(checkpoint):
     return VictimPolicyRunner(restored)
 
 # Loads the original starting trace, appends zeros until the target horizon
-def load_source_trace(path, episode_index, target_horizon, expected_sigma):
+def load_source_trace(path, episode_index, target_horizon):
     """Load one failed episode and zero-pad it to ``target_horizon``."""
     with np.load(path) as data:
         required = {
@@ -104,7 +104,7 @@ def load_source_trace(path, episode_index, target_horizon, expected_sigma):
         failure_step = int(data["failure_steps"][episode_index])
         victim_failed = bool(data["victim_failed"][episode_index])
         max_wind = float(data["max_wind"])
-        natural_wind_sigma = float(data["wind_sigma"])
+        source_wind_sigma = float(data["wind_sigma"])
         source_horizon = int(data["horizon"])
         recorded = np.asarray(winds[episode_index], dtype=np.float64)
 
@@ -126,13 +126,8 @@ def load_source_trace(path, episode_index, target_horizon, expected_sigma):
             f"target horizon {target_horizon} is shorter than the "
             f"{episode_length}-step source trace"
         )
-    if expected_sigma <= 0:
-        raise ValueError("natural wind sigma must be positive")
-    if not np.isclose(natural_wind_sigma, expected_sigma):
-        raise ValueError(
-            f"history wind_sigma={natural_wind_sigma}, but "
-            f"--natural-wind-sigma={expected_sigma}"
-        )
+    if source_wind_sigma <= 0:
+        raise ValueError("history wind_sigma must be positive")
 
     trace = np.zeros(target_horizon, dtype=np.float64)
     trace[:episode_length] = valid_winds
@@ -142,7 +137,7 @@ def load_source_trace(path, episode_index, target_horizon, expected_sigma):
         episode_length=episode_length,
         failure_step=failure_step,
         max_wind=max_wind,
-        natural_wind_sigma=natural_wind_sigma,
+        source_wind_sigma=source_wind_sigma,
         source_horizon=source_horizon,
     )
 
@@ -344,7 +339,9 @@ def save_chain(path, result, source, args):
         victim_failed=victim_failed,
         failure_steps=result.failure_steps,
         max_wind=np.asarray(source.max_wind, dtype=np.float32),
-        wind_sigma=np.asarray(source.natural_wind_sigma, dtype=np.float32),
+        # plot_wind_history.py interprets wind_sigma as the distribution being
+        # analyzed, so this is the MCMC target rather than the source metadata.
+        wind_sigma=np.asarray(args.natural_wind_sigma, dtype=np.float32),
         horizon=np.asarray(args.target_horizon, dtype=np.int32),
         # Raw-chain diagnostics and reproducibility metadata.
         chain=result.chain,
@@ -360,6 +357,11 @@ def save_chain(path, result, source, args):
         source_episode_length=np.asarray(source.episode_length, dtype=np.int32),
         source_failure_step=np.asarray(source.failure_step, dtype=np.int32),
         source_horizon=np.asarray(source.source_horizon, dtype=np.int32),
+        source_wind_sigma=np.asarray(source.source_wind_sigma, dtype=np.float32),
+        natural_wind_sigma=np.asarray(
+            args.natural_wind_sigma,
+            dtype=np.float64,
+        ),
         env_seed=np.asarray(args.env_seed, dtype=np.int64),
         proposal_sigma=np.asarray(args.proposal_sigma, dtype=np.float64),
         proposal_mode=np.asarray(args.proposal_mode),
@@ -417,7 +419,8 @@ def print_summary(result, source, args, csv_output, csv_trace_count):
     print(f"  padded_zero_count={len(source.trace) - source.episode_length}")
     print(f"  env_seed={args.env_seed}")
     print(f"  proposal_sigma={args.proposal_sigma}")
-    print(f"  natural_wind_sigma={source.natural_wind_sigma}")
+    print(f"  source_wind_sigma={source.source_wind_sigma}")
+    print(f"  natural_wind_sigma={args.natural_wind_sigma}")
     print(f"  acceptance_rate={np.mean(result.accepted):.4f}")
     print(f"  proposal_failure_rate={np.mean(result.proposal_failed):.4f}")
     print(
@@ -505,7 +508,6 @@ def main():
         args.input,
         args.episode_index,
         args.target_horizon,
-        args.natural_wind_sigma,
     )
     print(
         f"loaded episode {source.episode_index}: failed at step "
@@ -518,7 +520,7 @@ def main():
             "victim_checkpoint": None,
             "victim_env": args.victim_env,
             "max_wind": source.max_wind,
-            "wind_sigma": source.natural_wind_sigma,
+            "wind_sigma": args.natural_wind_sigma,
             "horizon": args.target_horizon,
         }
     )
@@ -529,7 +531,7 @@ def main():
             lambda trace: replay_trace(env, trace, args.env_seed),
             args.iterations,
             args.proposal_sigma,
-            source.natural_wind_sigma,
+            args.natural_wind_sigma,
             source.max_wind,
             np.random.default_rng(args.mcmc_seed),
             proposal_mode=args.proposal_mode,

@@ -22,7 +22,6 @@ class SourceTraceTests(unittest.TestCase):
             "adversary_wind_history_same_seeds.npz",
             episode_index=6,
             target_horizon=350,
-            expected_sigma=1.0,
         )
 
         self.assertEqual(source.episode_length, 289)
@@ -30,14 +29,13 @@ class SourceTraceTests(unittest.TestCase):
         self.assertEqual(source.trace.shape, (350,))
         np.testing.assert_array_equal(source.trace[289:], np.zeros(61))
         self.assertEqual(source.max_wind, 1.0)
-        self.assertEqual(source.natural_wind_sigma, 1.0)
+        self.assertEqual(source.source_wind_sigma, 1.0)
 
     def test_zero_padding_does_not_change_log_score(self):
         source = load_source_trace(
             "adversary_wind_history_same_seeds.npz",
             episode_index=6,
             target_horizon=350,
-            expected_sigma=1.0,
         )
 
         original_score = log_natural_density(
@@ -60,6 +58,7 @@ class MetropolisMathTests(unittest.TestCase):
     def test_gaussian_log_score(self):
         trace = np.array([1.0, -2.0, 0.0])
         self.assertAlmostEqual(log_natural_density(trace, sigma=1.0), -2.5)
+        self.assertAlmostEqual(log_natural_density(trace, sigma=2.0), -0.625)
 
     def test_full_vector_proposal_uses_requested_sigma(self):
         rng = np.random.default_rng(7)
