@@ -3,3 +3,13 @@ __pycache__/
 *.pyc
 ray_results/
 checkpoints/
+
+# Generated experiment outputs
+*.npz
+*.png
+*.csv
+wandb/
+adversary_videos/
+--input
+--out-path
+--show-mean
