@@ -202,8 +202,8 @@ def plot_history(history, args):
         plt.plot(
             timesteps[valid],
             episode_winds[valid],
-            color="black",
-            alpha=0.1,
+            color=color,
+            alpha=alpha,
             linewidth=linewidth,
             linestyle=linestyle,
             label=label,
