@@ -178,6 +178,27 @@ Constant wind is easy to interpret but cannot adapt to the state. It tests
 static bias sensitivity rather than the more general sequential attack learned
 by the adversary.
 
+### Pure sine-wave wind
+
+`eval_sine_wind.py` tests whether the frequency peak observed in the MCMC
+failure traces is sufficient by itself to cause failure. It applies the
+phase-zero trace
+
+```text
+w_t = A * sin(2 * pi * 0.23 * t)
+```
+
+for amplitudes `0.1, 0.2, ..., 1.0`. Each episode uses seed `1006` and may run
+for the complete 500-step horizon. The script does not search over phase and
+does not add an offset or noise, so it is a direct test of a pure
+`0.23`-frequency disturbance.
+
+If an amplitude causes a true CartPole boundary failure, the script saves and
+replays the 500-step trace before evaluating it on 100 additional initial-state
+seeds. If no amplitude fails, no failure file is created. With the current
+victim checkpoint, every tested amplitude survived all 500 steps. This shows
+that the Fourier peak alone is not sufficient to reproduce the MCMC failures.
+
 ### Random wind
 
 Gaussian random wind provides a non-adaptive stochastic baseline. Comparing
@@ -265,6 +286,63 @@ does not fail under the selected environment seed, victim checkpoint, and
 observation model, then it is not a valid state in the conditional target
 distribution.
 
+## Final pre-failure latent-space analysis
+
+`extract_transformer_latents.py` replays each distinct MCMC failure trace and
+records the adversary Transformer's internal representation. It preserves the
+model's intended 50-step attention memory and saves three 64-dimensional
+summaries per trace:
+
+- the mean latent over the complete trace;
+- the mean latent over the final 50 timesteps; and
+- the final latent immediately before the failure-causing wind action.
+
+`analyze_transformer_latents.py` analyzes the final pre-failure vectors in
+`transformer_latent_summaries.npz`. The current result contains 9,627 distinct
+failure traces. Each distinct trace is analyzed exactly once; repeated MCMC
+rows and MCMC dwell-time weights are not used in clustering, percentages, or
+failure-time summaries.
+
+The analysis performs the following steps:
+
+1. Verify that latent extraction completed and that the MCMC data and policy
+   checkpoint fingerprints match.
+2. Standardize each of the 64 latent dimensions across the 9,627 traces.
+3. Run K-means in the complete standardized 64-dimensional space for
+   `k=2,...,10`.
+4. Select the value of `k` with the highest silhouette score.
+5. Generate separate PCA, t-SNE, and UMAP two-dimensional views, coloring each
+   point with the same K-means label.
+6. Map the labels back to the original wind traces and plot only winds applied
+   before each trace's actual failure.
+
+K-means supplies the cluster assignments. PCA, t-SNE, and UMAP do not perform
+additional clustering; they provide three different two-dimensional views of
+the same 64-dimensional assignments.
+
+With random seed `42`, K-means selects two clusters:
+
+| Cluster | Distinct traces | Trace percentage | Mean failure step | Median failure step |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 9,400 | 97.64% | 130.8 | 120 |
+| 1 | 227 | 2.36% | 237.0 | 233 |
+
+The first two PCA components explain 44.49% and 27.33% of standardized latent
+variance, respectively. The small second cluster is visibly separated in PCA,
+t-SNE, and UMAP and is associated with later failures. This is descriptive
+structure among failure traces, not evidence that the cluster causes failure.
+All traces are failures from one MCMC experiment, so the analysis does not
+compare successful and failed trajectories.
+
+The generated `latent_analysis/` directory contains:
+
+- cluster-selection, PCA, t-SNE, and UMAP plots;
+- combined and cluster-faceted wind-trace plots;
+- `latent_clusters.csv`, with one row and one cluster label per distinct trace;
+  and
+- `cluster_summary.csv`, with unweighted trace counts and failure-time
+  statistics.
+
 ## Minimal reproduction
 
 Install the dependencies in a virtual environment:
@@ -288,6 +366,20 @@ python mcmc_failure_trace.py --victim-checkpoint checkpoints/victim --output epi
 python plot_wind_history.py --input episode_6_mcmc.npz --burn-in 1000 --thin 10 --show-mean --out-path episode_6_mcmc.png
 ```
 
+Test the pure phase-zero sine-wave disturbance:
+
+```bash
+python eval_sine_wind.py
+```
+
+After generating `transformer_latent_summaries.npz` with the
+checkpoint-compatible Python 3.8 and Ray 2.10 environment, run the latent
+analysis in the main environment:
+
+```bash
+python analyze_transformer_latents.py
+```
+
 The victim observation setting must remain consistent across training,
 adversary evaluation, and MCMC replay. Use `--env stateless` when training a
 stateless victim and `--victim-env stateless` in downstream commands.
@@ -302,6 +394,10 @@ stateless victim and `--victim-env stateless` in downstream commands.
 - `plot_episode_length_histogram.py` — random/adversarial survival comparison
 - `plot_wind_history.py` — NPZ and CSV wind-trace visualization
 - `mcmc_failure_trace.py` — failure-conditioned Metropolis sampler
+- `eval_sine_wind.py` — fixed-phase pure sine-wave robustness test
+- `extract_transformer_latents.py` — replay and pre-failure latent extraction
+- `analyze_transformer_latents.py` — K-means, PCA, t-SNE, UMAP, and
+  cluster-colored wind traces
 - `analysis.ipynb` — exploratory analysis
 
 Run the unit tests with:
