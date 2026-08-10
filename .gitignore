@@ -1,5 +1,20 @@
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+.coverage
+.ipynb_checkpoints/
+
+# Training and experiment output
 ray_results/
 checkpoints/
+artifacts/
+wandb/
+debug.log
+*.npz
+*.pkl
+*.mp4
+*.webm
+
+# Generated analysis output (curated figures live in docs/assets/)
+latent_analysis/
